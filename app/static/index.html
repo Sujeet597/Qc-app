@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Garment QC Inspection</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%231f5eff'/%3E%3Cpath d='M4 8.5l2.5 2.5L12 5.5' stroke='white' stroke-width='2' fill='none'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/livekit-client@2.23.0/dist/livekit-client.umd.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">Garment QC <span class="muted">Video Inspection</span></div>
+  <div id="whoami" class="who" hidden>
+    <span id="who-name"></span> <span id="who-role" class="chip"></span>
+    <label id="role-switch" class="role-switch" hidden>Acting as
+      <select id="role-picker">
+        <option value="vendor">Vendor</option>
+        <option value="qc">QC team</option>
+        <option value="approver">QC approver</option>
+        <option value="admin">Admin</option>
+      </select>
+    </label>
+    <button id="btn-home" class="ghost">Home</button>
+    <button id="btn-logout" class="ghost">Log out</button>
+  </div>
+</header>
+
+<main>
+  <!-- LOGIN -->
+  <section id="view-login" class="view card narrow">
+    <h1>Sign in</h1>
+    <form id="login-form">
+      <label>Username <input name="username" autocomplete="username" required></label>
+      <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit" class="primary">Sign in</button>
+    </form>
+    <p class="muted small">Demo: vendor1 / vendor123 · qc / qc123 · approver / approver123</p>
+  </section>
+
+  <!-- HOME -->
+  <section id="view-home" class="view" hidden>
+    <div id="vendor-home" hidden>
+      <h2>Start a new inspection</h2>
+      <div id="po-list" class="grid"></div>
+    </div>
+    <h2 id="insp-list-title">Inspections</h2>
+    <div class="filters" id="qc-filters" hidden>
+      <select id="status-filter">
+        <option value="">All</option>
+        <option value="in_progress">In progress (live)</option>
+        <option value="submitted">Submitted – waiting for QC</option>
+        <option value="reinspection_required">Reinspection required</option>
+        <option value="passed">Passed</option>
+        <option value="failed">Failed</option>
+      </select>
+    </div>
+    <div id="insp-list" class="list"></div>
+  </section>
+
+  <!-- INSPECTION -->
+  <section id="view-insp" class="view" hidden>
+    <div class="insp-head card">
+      <div class="meta" id="insp-meta"></div>
+      <div class="progress"><div id="progress-bar"></div></div>
+      <div class="progress-text"><span id="progress-text"></span> <span id="status-chip" class="chip"></span>
+        <span id="mode-chip" class="chip mode"></span></div>
+    </div>
+
+    <div class="insp-body">
+      <div class="left">
+        <div class="video-wrap">
+          <video id="cam" autoplay playsinline muted></video>
+          <div id="video-placeholder" class="video-placeholder">Camera off</div>
+          <div id="banner" class="banner" hidden>
+            <div class="banner-no" id="banner-no"></div>
+            <div>
+              <div class="banner-title" id="banner-title"></div>
+              <div class="banner-text" id="banner-text"></div>
+            </div>
+          </div>
+          <div id="flash" class="flash" hidden></div>
+        </div>
+
+        <div class="controls" id="vendor-controls">
+          <button id="btn-capture" class="primary big">Capture now</button>
+          <button id="btn-skip" class="ghost">Skip check</button>
+          <button id="btn-help" class="ghost">Ask QC for help</button>
+          <button id="btn-camera" class="ghost">Switch camera</button>
+        </div>
+
+        <form id="readings-form" class="card readings" hidden>
+          <div class="small muted" id="readings-title">Enter readings shown on camera</div>
+          <div id="readings-fields" class="readings-fields"></div>
+          <button type="submit" class="primary" id="btn-readings">Send reading</button>
+        </form>
+
+        <div class="card">
+          <div class="small muted">Activity</div>
+          <ul id="log" class="log"></ul>
+        </div>
+      </div>
+
+      <div class="right">
+        <div class="card">
+          <div class="checklist-head">
+            <strong>Checklist</strong>
+            <span class="small muted">tap a check to jump to it</span>
+          </div>
+          <ol id="checklist" class="checklist"></ol>
+        </div>
+
+        <div class="card" id="ref-upload" hidden>
+          <strong>Upload approved reference</strong>
+          <form id="ref-form" class="row-form">
+            <select name="kind">
+              <option value="pps">PPS (color)</option>
+              <option value="sealer">Sealer sample</option>
+              <option value="main_label">Main label</option>
+              <option value="packing">Inner pack</option>
+            </select>
+            <input type="file" name="file" accept="image/*" required>
+            <button class="ghost" type="submit">Upload</button>
+          </form>
+        </div>
+
+        <div class="card actions">
+          <button id="btn-submit" class="primary" hidden>Submit inspection</button>
+          <button id="btn-report" class="ghost">Download Excel report</button>
+          <div id="decision" hidden>
+            <strong>Final decision</strong>
+            <textarea id="decision-note" rows="2" placeholder="Decision note / corrective action"></textarea>
+            <label class="small"><input type="checkbox" id="decision-exception"> Record authorized exception for critical failures</label>
+            <div class="row">
+              <button class="pass" data-decision="passed">Pass</button>
+              <button class="fail" data-decision="failed">Fail</button>
+              <button class="review" data-decision="reinspection_required">Reinspection</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>
