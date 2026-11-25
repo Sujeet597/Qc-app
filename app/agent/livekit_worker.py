@@ -39,6 +39,7 @@ class LiveKitMessenger:
 async def _consume_video(track: rtc.Track, sampler: FrameSampler) -> None:
     stream = rtc.VideoStream(track, format=rtc.VideoBufferType.RGBA)
     last = 0.0
+    size = None
     try:
         async for event in stream:
             now = time.monotonic()
@@ -46,6 +47,9 @@ async def _consume_video(track: rtc.Track, sampler: FrameSampler) -> None:
                 continue
             last = now
             f = event.frame
+            if (f.width, f.height) != size:
+                size = (f.width, f.height)
+                log.info("vendor video resolution %dx%d", *size)
             rgba = np.frombuffer(f.data, dtype=np.uint8).reshape(f.height, f.width, 4)
             await asyncio.to_thread(sampler.push, rgba[:, :, :3].copy(), now)
     finally:
@@ -71,6 +75,8 @@ async def run_agent(inspection_id: int, timing: AgentTiming | None = None) -> No
     def on_track(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
         if track.kind == rtc.TrackKind.KIND_VIDEO and participant.identity.startswith("vendor-"):
             log.info("watching camera of %s", participant.identity)
+            if publication.simulcasted:   # full-resolution layer: barcodes and labels need the detail
+                publication.set_video_quality(rtc.VideoQuality.VIDEO_QUALITY_HIGH)
             task = asyncio.create_task(_consume_video(track, sampler))
             video_tasks.add(task)
             task.add_done_callback(video_tasks.discard)

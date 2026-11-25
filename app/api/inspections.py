@@ -14,9 +14,9 @@ from app.api.deps import current_user, get_inspection_for, get_po_for, require
 from app.checklist import BY_NO, CHECKLIST, input_fields
 from app.core.config import settings
 from app.core.database import get_db
-from app.models import CheckResult, CheckStatus, Inspection, InspectionStatus, Role, User
+from app.models import CheckResult, CheckStatus, Evidence, Inspection, InspectionStatus, Role, User
 from app.schemas import CheckOut, DecisionIn, InspectionCreate, InspectionOut, ReviewIn, VideoTokenOut
-from app.services import report, video
+from app.services import report, storage, video
 from app.services.decision import summarize
 from app.services.evidence import EvidenceError, record_evidence
 from app.services.verification import CheckInputs
@@ -29,7 +29,8 @@ def _check_out(c: CheckResult, insp: Inspection) -> CheckOut:
     chart_keys = list((insp.po.size_chart.get(insp.size) or {}).keys())
     return CheckOut.model_validate(c).model_copy(update={
         "title": d.title, "instruction": d.instruction, "critical": d.critical, "method": d.method,
-        "input_fields": input_fields(c.check_no, chart_keys), "evidence_count": len(c.evidence)})
+        "input_fields": input_fields(c.check_no, chart_keys), "evidence_count": len(c.evidence),
+        "evidence_ids": [e.id for e in c.evidence]})
 
 
 def _out(insp: Inspection) -> InspectionOut:
@@ -210,6 +211,20 @@ def final_decision(insp_id: int, body: DecisionIn, db: Session = Depends(get_db)
     insp.decided_at = datetime.now(timezone.utc)
     db.commit()
     return _out(insp)
+
+
+@router.get("/{insp_id}/evidence/{evidence_id}")
+def get_evidence_image(insp_id: int, evidence_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """The captured frame, so QC / approver can see what the vendor showed."""
+    insp = get_inspection_for(db, insp_id, user)
+    ev = db.get(Evidence, evidence_id)
+    if not ev or ev.check.inspection_id != insp.id:
+        raise HTTPException(404, "Evidence not found")
+    try:
+        data = storage.read_file(ev.file_path)
+    except FileNotFoundError:
+        raise HTTPException(404, "Evidence file missing from storage")
+    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
 
 
 @router.get("/{insp_id}/report.xlsx")

@@ -36,7 +36,8 @@ before anyone else uses it – with it off, anyone who can open the page can act
    Blurry or dark frames come back as "Reshow item…" — the page stays on that check.
 3. Checks 8, 9, 10 and 17–20 ask for a reading (scale, tape, GSM, supplier) — type it, then Capture.
 4. Tap any check to jump to it. When all 20 are done → **Submit inspection**.
-5. Switch to **QC team** → open the inspection → tap a check → Pass / Fail / Review.
+5. Switch to **QC team** → open the inspection → tap a check to see the vendor's captured photo (click it for full size) → Pass / Fail / Review.
+   In local mode QC does **not** see the vendor's live camera – only the captured photos. Live watching needs LiveKit (below).
    QC can also upload the PPS / sealer reference photos here (needed for color & visual checks).
 6. Switch to **QC approver** → open the submitted inspection → final decision → Excel report.
 
@@ -44,9 +45,15 @@ before anyone else uses it – with it off, anyone who can open the page can act
 The vendor's page then joins the call, the server agent joins hidden, gives instructions and verifies by itself;
 QC opens the same inspection ("Join live") to watch, talk, jump/skip checks.
 
-**Testing from a phone:** browsers only allow the camera on `https://` (or `localhost`).
-Run the server with `--host 0.0.0.0` and expose it over HTTPS, e.g. `cloudflared tunnel --url http://localhost:8000`,
-then open the https link on the phone.
+**Testing from a phone:** phones only allow the camera on `https://`. Two ways:
+
+- **Same Wi-Fi, no internet exposure** – self-signed certificate in `certs/` (re-create with openssl if missing):
+  ```powershell
+  .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --ssl-keyfile certs/key.pem --ssl-certfile certs/cert.pem
+  ```
+  Open `https://<PC Wi-Fi IP>:8000` on the phone → Safari warns "not private" → **Show Details → visit this website**.
+  The certificate is made for IP 192.168.148.177; if the PC's IP changes, make a new one.
+- **From anywhere** – `cloudflared tunnel --url http://localhost:8000` (blocked on some office networks).
 
 ## Turn on AI
 

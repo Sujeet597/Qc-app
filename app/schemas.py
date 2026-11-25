@@ -85,6 +85,7 @@ class CheckOut(ORM):
     method: str = ""
     input_fields: list[str] = []
     evidence_count: int = 0
+    evidence_ids: list[int] = []
     status: str
     ai_status: str | None
     confidence: float | None

@@ -208,6 +208,7 @@ function renderCheck(c, isOpen) {
     c.reason ? el("div", {}, el("b", {}, "Reason: "), c.reason) : null,
     c.confidence !== null && c.confidence !== undefined ? el("div", {}, el("b", {}, "Confidence: "), `${Math.round(c.confidence * 100)}%`) : null,
     el("div", {}, el("b", {}, "Evidence: "), `${c.evidence_count} frame(s)`),
+    (c.evidence_ids || []).length ? evidenceStrip(c.evidence_ids) : null,
     c.ai_status && c.ai_status !== c.status ? el("div", {}, el("b", {}, "System result: "), STATUS_LABEL[c.ai_status]) : null,
     c.reviewer_comment ? el("div", {}, el("b", {}, "QC comment: "), c.reviewer_comment) : null,
     c.corrective_action ? el("div", {}, el("b", {}, "Corrective action: "), c.corrective_action) : null);
@@ -233,6 +234,24 @@ function renderCheck(c, isOpen) {
     else if (S.mode === "local" && isVendor()) selectCheck(c.check_no);
   });
   return li;
+}
+/* captured frames: fetched with the role header / token, cached as blob URLs so polling doesn't re-download */
+const thumbCache = new Map();
+function evidenceStrip(ids) {
+  const box = el("div", { class: "evidence-strip" });
+  for (const id of ids.slice(-4)) {
+    const img = el("img", { alt: `Evidence ${id}`, title: "Click to open full size" });
+    img.addEventListener("click", (ev) => { ev.stopPropagation(); if (img.src) window.open(img.src, "_blank"); });
+    box.append(img);
+    let p = thumbCache.get(id);
+    if (!p) {
+      p = api(`/inspections/${S.insp.id}/evidence/${id}`).then((r) => r.blob()).then((b) => URL.createObjectURL(b));
+      p.catch(() => thumbCache.delete(id));
+      thumbCache.set(id, p);
+    }
+    p.then((url) => { img.src = url; }).catch(() => img.replaceWith(el("span", {}, "(image unavailable)")));
+  }
+  return box;
 }
 const firstPending = () => (S.insp.checks.find((c) => c.status === "pending") || {}).check_no ?? null;
 const checkByNo = (no) => S.insp.checks.find((c) => c.check_no === no);
@@ -270,7 +289,24 @@ $("#readings-form").addEventListener("submit", (ev) => {
 });
 
 /* ---------------- video ---------------- */
+function cameraBlockedReason() {
+  if (navigator.mediaDevices?.getUserMedia) return null;
+  if (!window.isSecureContext)
+    return `Camera is blocked because this page is opened over http://. Phones only allow the camera on https:// – open the https link instead (see README → "Testing from a phone"). Current address: ${location.origin}`;
+  return "This browser does not support camera access. Use Safari (iPhone) or Chrome (Android).";
+}
+
 async function connectVideo() {
+  const blocked = isVendor() ? cameraBlockedReason() : null;
+  if (blocked) {
+    S.mode = "closed";
+    $("#mode-chip").textContent = "Camera blocked";
+    $("#vendor-controls").hidden = true;
+    $("#video-placeholder").hidden = false;
+    $("#video-placeholder").textContent = blocked;
+    toast(blocked);
+    return;
+  }
   let tok = null;
   try { tok = await api(`/inspections/${S.insp.id}/video-token`, { method: "POST" }); }
   catch (e) { if (e.status !== 503) { toast(e.message); } }
@@ -282,7 +318,8 @@ async function startLive(tok) {
   const LK = window.LivekitClient;
   S.mode = "live";
   $("#mode-chip").textContent = "Live call · AI agent";
-  const room = new LK.Room({ adaptiveStream: true, dynacast: true });
+  // adaptiveStream off: it would size the vendor video to the box on screen; QC needs full detail to inspect
+  const room = new LK.Room({ adaptiveStream: false, dynacast: true });
   S.room = room;
   room.on(LK.RoomEvent.DataReceived, (payload, participant, kind, topic) => {
     if (topic !== "qc") return;
@@ -290,6 +327,7 @@ async function startLive(tok) {
   });
   room.on(LK.RoomEvent.TrackSubscribed, (track, pub, participant) => {
     if (track.kind === "video" && participant.identity.startsWith("vendor-") && !isVendor()) {
+      pub.setVideoQuality(LK.VideoQuality.HIGH);
       track.attach($("#cam")); $("#video-placeholder").hidden = true;
     } else if (track.kind === "audio") {
       const a = track.attach(); a.hidden = true; document.body.append(a);
@@ -361,7 +399,7 @@ async function startLocal() {
   $("#mode-chip").textContent = "Local test mode (no video call)";
   if (!isVendor()) {
     $("#vendor-controls").hidden = true;   // nothing to control without a live call
-    $("#video-placeholder").textContent = "Video call not configured – results appear here as the vendor captures";
+    $("#video-placeholder").textContent = "No live video in local test mode – tap a check on the right to see the photo the vendor captured. Live video needs LiveKit (see README).";
     return;
   }
   log("Video call not configured – using this device's camera (local test mode)");
