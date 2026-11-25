@@ -39,9 +39,12 @@ def test_full_inspection_flow(client):
     c = _evidence(client, vendor, iid, 12, flat_jpeg())
     assert c["status"] == "manual_review" and "Reshow" in c["reason"]
 
-    # 6. barcode: browser-decoded codes match PO -> pass; wrong code -> fail
-    assert _evidence(client, vendor, iid, 6, textured_jpeg(), codes="111")["status"] == "fail"
-    assert _evidence(client, vendor, iid, 6, textured_jpeg(), codes="8901234567890,TF-7788-M")["status"] == "pass"
+    # 6. barcode: a vendor cannot type barcode values - only what the server decodes from the frame counts
+    c = _evidence(client, vendor, iid, 6, textured_jpeg(), codes="8901234567890,TF-7788-M")
+    assert c["status"] == "manual_review" and "Unable to read" in c["reason"]
+    # codes read by QC are accepted: matching PO -> pass; wrong code -> fail
+    assert _evidence(client, qc, iid, 6, textured_jpeg(), codes="111")["status"] == "fail"
+    assert _evidence(client, qc, iid, 6, textured_jpeg(), codes="8901234567890,TF-7788-M")["status"] == "pass"
 
     # 8 weight / 9 measurements / 10 GSM against PO tolerances
     assert _evidence(client, vendor, iid, 8, textured_jpeg(), measured=json.dumps({"weight_g": 214}))["status"] == "pass"
@@ -99,7 +102,10 @@ def test_critical_failure_blocks_approval(client):
     po = client.get("/api/pos", headers=vendor).json()[0]
     iid = client.post("/api/inspections", headers=vendor, json={"po_id": po["id"], "color_name": "NAVY BLUE", "size": "S"}).json()["id"]
     for no in range(1, 21):
-        _evidence(client, vendor, iid, no, textured_jpeg(), codes="999" if no == 6 else "")
+        if no == 6:   # QC reads a wrong barcode -> critical failure
+            _evidence(client, qc, iid, no, textured_jpeg(), codes="999")
+        else:
+            _evidence(client, vendor, iid, no, textured_jpeg())
     for c in client.get(f"/api/inspections/{iid}", headers=qc).json()["checks"]:
         if c["status"] == "manual_review":
             client.post(f"/api/inspections/{iid}/checks/{c['check_no']}/review", headers=qc, json={"status": "pass"})

@@ -134,7 +134,8 @@ def submit_evidence(
     insp_id: int,
     check_no: int,
     frame: UploadFile = File(..., description="JPEG/PNG frame captured from the live video"),
-    codes: str = Form("", description="Comma-separated barcodes decoded in the browser"),
+    codes: str = Form("", description="Comma-separated barcode values read by QC. Ignored for vendors: "
+                                      "the server decodes barcodes from the frame itself"),
     measured: str = Form("", description='JSON readings, e.g. {"weight_g": 212}'),
     supplier_code: str = Form(""),
     db: Session = Depends(get_db),
@@ -150,7 +151,10 @@ def submit_evidence(
             raise ValueError
     except ValueError:
         raise HTTPException(422, "measured must be a JSON object")
-    inputs = CheckInputs(codes=[c.strip() for c in codes.split(",") if c.strip()], measured=readings,
+    # Barcode values decide critical check 6, so a vendor must not be able to type them in: for vendors only
+    # codes the server decodes from the uploaded frame count. Same rule as the live call (controller.ALLOWED_SENDERS).
+    client_codes = [] if user.role == Role.VENDOR else [c.strip() for c in codes.split(",") if c.strip()]
+    inputs = CheckInputs(codes=client_codes, measured=readings,
                          supplier_code=supplier_code.strip() or None)
     try:
         chk = record_evidence(db, insp, check_no, frame.file.read(), inputs, source="upload")
