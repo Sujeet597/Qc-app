@@ -13,8 +13,15 @@ class Settings(BaseSettings):
     storage_dir: str = "./storage"
 
     ai_provider: str = "mock"  # "mock" | "claude"
+    anthropic_api_key: str = ""        # read from .env here: the Anthropic SDK itself does not read .env
     anthropic_model: str = "claude-opus-5-5"
+    ai_timeout_s: float = 60.0         # per AI call; a hung call must not block the inspection
+    ai_max_retries: int = 2            # SDK retries on network errors, 429 and 5xx
     ai_confidence_threshold: float = 0.80
+    # BRD section 10: add automated decisions only after validation against real inspections. While false,
+    # an AI Pass / Fail is shown to QC as a suggestion (Manual Review). Rule-based results (barcode match,
+    # Delta-E, measurements, counts, non-nominated supplier code) are not affected.
+    ai_auto_decide: bool = False
 
     color_delta_e_max: float = 3.0
 

@@ -10,7 +10,7 @@ For each pending checklist point:
 
 Messages exchanged over the LiveKit data channel (topic "qc"), JSON:
   agent -> room : agent_ready | instruction | waiting_for_input | reshow | result | skipped | no_video | done | error
-  room  -> agent: readings {check_no, measured?, supplier_code?} | codes {check_no, codes[]}
+  room  -> agent: readings {check_no, measured?, supplier_code?, batch_no?} | codes {check_no, codes[]}
                   goto {check_no} | skip | capture | stop
 """
 import asyncio
@@ -22,13 +22,13 @@ from typing import Callable, Protocol
 from sqlalchemy.orm import Session
 
 from app.agent.frames import FrameSampler
-from app.checklist import BY_NO, CHECKLIST, Method, input_fields
+from app.checklist import BY_NO, CHECKLIST, Method
 from app.core.database import SessionLocal
 from app.models import CheckStatus, Inspection
 from app.services import imaging
 from app.services.decision import summarize
 from app.services.evidence import EvidenceError, record_evidence
-from app.services.verification import CheckInputs
+from app.services.verification import CheckInputs, required_inputs
 
 log = logging.getLogger("qc.agent")
 
@@ -135,6 +135,10 @@ class InspectionController:
             keys = list((insp.po.size_chart.get(insp.size) or {}).keys())
             return pending, keys, insp.status
 
+    def _fields(self, no: int) -> list[str]:
+        with self.session_factory() as db:
+            return required_inputs(db.get(Inspection, self.inspection_id), no)
+
     def _record(self, no: int, jpeg: bytes, inputs: CheckInputs) -> dict:
         with self.session_factory() as db:
             insp = db.get(Inspection, self.inspection_id)
@@ -171,8 +175,7 @@ class InspectionController:
 
     async def _do_check(self, no: int) -> None:
         d = BY_NO[no]
-        _, chart_keys, _ = await asyncio.to_thread(self._load)
-        fields = input_fields(no, chart_keys)
+        fields = await asyncio.to_thread(self._fields, no)
 
         for attempt in range(1, self.t.max_attempts + 1):
             self._capture = False
@@ -213,6 +216,7 @@ class InspectionController:
                 codes=self.sampler.codes_since(started) + self.client_codes.get(no, []),
                 measured=reading.get("measured") or {},
                 supplier_code=reading.get("supplier_code"),
+                batch_no=reading.get("batch_no"),
             )
             result = await asyncio.to_thread(self._record, no, imaging.encode_jpeg(best.rgb), inputs)
             log.info("check %s attempt %s -> %s (%s)", no, attempt, result["status"], result["reason"])

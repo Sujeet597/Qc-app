@@ -59,6 +59,7 @@ def test_agent_runs_all_checks_from_video(client):
         # the vendor types readings in the UI; they arrive over the data channel
         ctl.handle_message({"type": "readings", "check_no": 8, "measured": {"weight_g": 205}})
         ctl.handle_message({"type": "readings", "check_no": 10, "measured": {"gsm": 200}})
+        ctl.handle_message({"type": "readings", "check_no": 15, "measured": {"inner_pack_pcs": 5}})  # pieces counted in the inner pack
         ctl.handle_message({"type": "codes", "check_no": 6, "codes": ["8901234567890", "TF-7788-M"]})
         for no in (17, 18, 19, 20):
             ctl.handle_message({"type": "readings", "check_no": no, "supplier_code": "NOT-NOMINATED"})

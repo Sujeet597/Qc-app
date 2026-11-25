@@ -58,6 +58,21 @@ def assess_quality(data: bytes) -> Quality:
     return Quality(ok=not issues, sharpness=sharpness, brightness=brightness, issues=issues)
 
 
+MAX_CLIPPED = 0.10   # share of pixels allowed to be pure black / blown-out white in a color check frame
+
+
+def lighting_issues(data: bytes) -> list[str]:
+    """Lighting problems that make a color comparison unreliable (BRD 4A). Average brightness can look fine
+    while large areas are blown out by glare or lost in shadow - those areas have no usable color."""
+    gray = load_rgb(data, 512) @ np.array([0.299, 0.587, 0.114])
+    issues = []
+    if float((gray >= 250).mean()) > MAX_CLIPPED:
+        issues.append("Glare / overexposed areas - tilt the garment or move the lamp.")
+    if float((gray <= 5).mean()) > MAX_CLIPPED:
+        issues.append("Deep shadows - light the garment evenly.")
+    return issues
+
+
 def _srgb_to_lab(rgb: np.ndarray) -> np.ndarray:
     c = rgb / 255.0
     c = np.where(c > 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)

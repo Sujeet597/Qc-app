@@ -1,15 +1,34 @@
 """Save one captured frame as evidence and run the checklist verification on it.
-Shared by the REST endpoint (browser capture) and the live video agent."""
+Shared by the REST endpoint (browser capture) and the live video agent.
+
+Every capture is kept as an attempt: its Evidence row stores the result that capture produced
+("outcome"), so a re-capture never erases what an earlier attempt showed. The CheckResult row
+holds the latest result. If QC had already reviewed the check, that review is moved into the new
+attempt's record ("replaced_review") and cleared, so the check shows the new result, not an old
+reviewer's name next to it. A check QC failed cannot turn into a Pass by re-capturing: it goes to
+Manual Review for QC to confirm.
+"""
 from sqlalchemy.orm import Session
 
 from app.checklist import BY_NO
 from app.models import CheckResult, CheckStatus, Evidence, Inspection, InspectionStatus
 from app.services import storage
-from app.services.verification import CheckInputs, run_check
+from app.services.verification import CheckInputs, Outcome, run_check
 
 
 class EvidenceError(ValueError):
     pass
+
+
+def _take_review(chk: CheckResult) -> dict | None:
+    """Remove QC's review from the check and return it for the attempt history."""
+    if chk.reviewer_id is None:
+        return None
+    review = {"status": chk.status, "reviewer_id": chk.reviewer_id, "comment": chk.reviewer_comment,
+              "corrective_action": chk.corrective_action, "ai_status": chk.ai_status}
+    chk.reviewer_id = None
+    chk.reviewer_comment = chk.corrective_action = ""
+    return review
 
 
 def record_evidence(db: Session, insp: Inspection, check_no: int, frame: bytes, inputs: CheckInputs,
@@ -25,17 +44,30 @@ def record_evidence(db: Session, insp: Inspection, check_no: int, frame: bytes, 
     path = storage.save_file(frame, f"evidence/{insp.id}/{check_no}")
     try:
         outcome = run_check(db, insp, BY_NO[check_no], frame, inputs)
+        extracted = dict(outcome.extracted)
     except Exception as e:  # a bad image or AI failure must never silently pass
-        chk.status = chk.ai_status = CheckStatus.MANUAL_REVIEW
-        chk.confidence = None
-        chk.reason = f"Automatic check failed ({type(e).__name__}) - QC to verify."
-        chk.evidence.append(Evidence(file_path=path, extracted={"error": str(e), "source": source}))
-    else:
-        chk.status = chk.ai_status = outcome.status
-        chk.confidence = outcome.confidence
-        chk.expected_value = outcome.expected
-        chk.observed_value = outcome.observed
-        chk.reason = outcome.reason
-        chk.evidence.append(Evidence(file_path=path, extracted={**outcome.extracted, "source": source}))
+        outcome = Outcome(CheckStatus.MANUAL_REVIEW, None, chk.expected_value, "",
+                          f"Automatic check failed ({type(e).__name__}) - QC to verify.")
+        extracted = {"error": str(e)}
+
+    review = _take_review(chk)
+    status = outcome.status
+    reason = outcome.reason
+    if review and review["status"] == CheckStatus.FAIL and status == CheckStatus.PASS:
+        status = CheckStatus.MANUAL_REVIEW
+        reason = f"QC failed this check earlier - QC to confirm the new capture. System: {outcome.reason}"
+
+    chk.ai_status = outcome.status
+    chk.status = status
+    chk.confidence = outcome.confidence
+    chk.expected_value = outcome.expected
+    chk.observed_value = outcome.observed
+    chk.reason = reason
+    extracted.update(source=source, outcome={
+        "status": status, "ai_status": outcome.status, "confidence": outcome.confidence,
+        "expected": outcome.expected, "observed": outcome.observed, "reason": reason})
+    if review:
+        extracted["replaced_review"] = review
+    chk.evidence.append(Evidence(file_path=path, extracted=extracted))
     db.commit()
     return chk

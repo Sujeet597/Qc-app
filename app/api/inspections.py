@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import current_user, get_inspection_for, get_po_for, require
-from app.checklist import BY_NO, CHECKLIST, input_fields
+from app.checklist import BY_NO, CHECKLIST
 from app.core.config import settings
 from app.core.database import get_db
 from app.models import CheckResult, CheckStatus, Evidence, Inspection, InspectionStatus, Role, User
@@ -20,17 +20,16 @@ from app.schemas import CheckOut, DecisionIn, InspectionCreate, InspectionOut, R
 from app.services import report, storage, video
 from app.services.decision import summarize
 from app.services.evidence import EvidenceError, record_evidence
-from app.services.verification import CheckInputs
+from app.services.verification import CheckInputs, applicable_references, required_inputs
 
 router = APIRouter(prefix="/api/inspections", tags=["inspections"])
 
 
 def _check_out(c: CheckResult, insp: Inspection) -> CheckOut:
     d = BY_NO[c.check_no]
-    chart_keys = list((insp.po.size_chart.get(insp.size) or {}).keys())
     return CheckOut.model_validate(c).model_copy(update={
         "title": d.title, "instruction": d.instruction, "critical": d.critical, "method": d.method,
-        "input_fields": input_fields(c.check_no, chart_keys), "evidence_count": len(c.evidence),
+        "input_fields": required_inputs(insp, c.check_no), "evidence_count": len(c.evidence),
         "evidence_ids": [e.id for e in c.evidence]})
 
 
@@ -138,6 +137,7 @@ def submit_evidence(
                                       "the server decodes barcodes from the frame itself"),
     measured: str = Form("", description='JSON readings, e.g. {"weight_g": 212}'),
     supplier_code: str = Form(""),
+    batch_no: str = Form("", description="Supplier batch number (checks 18-20 pocketing / zip / poly bag)"),
     db: Session = Depends(get_db),
     user: User = Depends(require(Role.VENDOR, Role.QC)),
 ):
@@ -155,7 +155,7 @@ def submit_evidence(
     # codes the server decodes from the uploaded frame count. Same rule as the live call (controller.ALLOWED_SENDERS).
     client_codes = [] if user.role == Role.VENDOR else [c.strip() for c in codes.split(",") if c.strip()]
     inputs = CheckInputs(codes=client_codes, measured=readings,
-                         supplier_code=supplier_code.strip() or None)
+                         supplier_code=supplier_code.strip() or None, batch_no=batch_no.strip() or None)
     try:
         chk = record_evidence(db, insp, check_no, frame.file.read(), inputs, source="upload")
     except EvidenceError as e:
@@ -239,11 +239,27 @@ def _safe_name(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "_", text)[:64]
 
 
+def _report_data(db: Session, insp: Inspection) -> tuple[list[Inspection], report.ReportExtras]:
+    """Reinspection history, reviewer / approver names and approved references for the report (BRD section 8)."""
+    history = db.scalars(select(Inspection).where(Inspection.po_id == insp.po_id, Inspection.color_name == insp.color_name,
+                                                  Inspection.size == insp.size).order_by(Inspection.id)).all()
+    user_ids = {c.reviewer_id for c in insp.checks if c.reviewer_id} | {insp.decided_by_id} - {None}
+    names = {u.id: u.full_name or u.username for u in db.scalars(select(User).where(User.id.in_(user_ids)))} if user_ids else {}
+    refs = [report.Reference(r.kind, r.color_name, r.size, r.note, r.file_path) for r in applicable_references(db, insp)]
+    return list(history), report.ReportExtras(names=names, references=refs)
+
+
 @router.get("/{insp_id}/report.xlsx")
 def download_report(insp_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
     insp = get_inspection_for(db, insp_id, user)
-    history = db.scalars(select(Inspection).where(Inspection.po_id == insp.po_id, Inspection.color_name == insp.color_name,
-                                                  Inspection.size == insp.size).order_by(Inspection.id)).all()
-    content = report.build_excel(insp, list(history))
+    content = report.build_excel(insp, *_report_data(db, insp))
     return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": f'attachment; filename="QC_{_safe_name(insp.po.po_number)}_{insp.id}.xlsx"'})
+
+
+@router.get("/{insp_id}/report.pdf")
+def download_report_pdf(insp_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    insp = get_inspection_for(db, insp_id, user)
+    content = report.build_pdf(insp, *_report_data(db, insp))
+    return Response(content, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="QC_{_safe_name(insp.po.po_number)}_{insp.id}.pdf"'})

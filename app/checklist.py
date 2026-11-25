@@ -37,7 +37,7 @@ CHECKLIST: tuple[CheckDef, ...] = (
     CheckDef(4, "Main label", Method.VISUAL_COMPARE, False,
              "Show the main label straight on, then its placement on the garment.", reference_kind="main_label"),
     CheckDef(5, "Size label", Method.OCR_MATCH, False,
-             "Show the size label close up.", po_field="size"),
+             "Show the size label close up.", po_field="size", reference_kind="size_label"),
     CheckDef(6, "Barcode / taffeta number as per PO", Method.BARCODE_MATCH, True,
              "Show the barcode label and the taffeta label one after the other, close up."),
     CheckDef(7, "Trims as per sealer", Method.VISUAL_COMPARE, False,

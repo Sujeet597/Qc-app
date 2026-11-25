@@ -3,6 +3,8 @@ Pass/Fail decision against PO data and thresholds, so the rules stay auditable."
 import base64
 import io
 import json
+import logging
+import os
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Literal, Protocol
@@ -10,6 +12,8 @@ from typing import Literal, Protocol
 from PIL import Image
 
 from app.core.config import settings
+
+log = logging.getLogger("qc.ai")
 
 Verdict = Literal["pass", "fail", "unsure"]
 
@@ -81,11 +85,23 @@ def _image_block(data: bytes) -> dict:
     }
 
 
+class NotConfiguredProvider:
+    """AI_PROVIDER=claude but no API key: say so on every check instead of failing with an auth error."""
+
+    def analyze(self, task: VisionTask) -> AIResult:
+        return AIResult.unsure("AI_PROVIDER=claude but ANTHROPIC_API_KEY is not set - QC must verify manually.")
+
+
+def _api_key() -> str:
+    return settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+
+
 class ClaudeProvider:
-    def __init__(self) -> None:
+    def __init__(self, api_key: str) -> None:
         import anthropic
         self._anthropic = anthropic
-        self.client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY
+        self.client = anthropic.Anthropic(api_key=api_key, timeout=settings.ai_timeout_s,
+                                          max_retries=settings.ai_max_retries)
 
     def analyze(self, task: VisionTask) -> AIResult:
         content: list[dict] = []
@@ -112,6 +128,8 @@ class ClaudeProvider:
             return AIResult.unsure("AI rate limited - retry or verify manually.")
         except anthropic.APIStatusError as e:
             return AIResult.unsure(f"AI error {e.status_code} - verify manually.")
+        except anthropic.APITimeoutError:  # subclass of APIConnectionError, so it must come first
+            return AIResult.unsure(f"AI did not answer within {settings.ai_timeout_s:g}s - verify manually.")
         except anthropic.APIConnectionError:
             return AIResult.unsure("AI unreachable - verify manually.")
 
@@ -133,5 +151,9 @@ class ClaudeProvider:
 @lru_cache
 def get_provider() -> VisionProvider:
     if settings.ai_provider == "claude":
-        return ClaudeProvider()
+        key = _api_key()
+        if not key:
+            log.warning("AI_PROVIDER=claude but ANTHROPIC_API_KEY is not set - all AI checks go to Manual Review")
+            return NotConfiguredProvider()
+        return ClaudeProvider(key)
     return MockProvider()

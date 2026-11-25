@@ -5,3 +5,4 @@ __pycache__/
 storage/
 .pytest_cache/
 certs/
+BRD_GAPS.md
