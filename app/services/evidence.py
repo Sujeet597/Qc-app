@@ -31,6 +31,15 @@ def _take_review(chk: CheckResult) -> dict | None:
     return review
 
 
+def _prior_qc_failed(chk: CheckResult, taken_review: dict | None) -> bool:
+    """True if QC's most recent review on this check was Fail (persists across multiple re-captures)."""
+    if taken_review is not None:
+        return taken_review["status"] == CheckStatus.FAIL
+    latest = max((e for e in chk.evidence if (e.extracted or {}).get("replaced_review")),
+                 key=lambda e: e.id or 0, default=None)
+    return bool(latest and latest.extracted["replaced_review"]["status"] == CheckStatus.FAIL)
+
+
 def record_evidence(db: Session, insp: Inspection, check_no: int, frame: bytes, inputs: CheckInputs,
                     source: str = "upload") -> CheckResult:
     if insp.status != InspectionStatus.IN_PROGRESS:
@@ -50,10 +59,11 @@ def record_evidence(db: Session, insp: Inspection, check_no: int, frame: bytes, 
                           f"Automatic check failed ({type(e).__name__}) - QC to verify.")
         extracted = {"error": str(e)}
 
+    db.refresh(chk)
     review = _take_review(chk)
     status = outcome.status
     reason = outcome.reason
-    if review and review["status"] == CheckStatus.FAIL and status == CheckStatus.PASS:
+    if _prior_qc_failed(chk, review) and status == CheckStatus.PASS:
         status = CheckStatus.MANUAL_REVIEW
         reason = f"QC failed this check earlier - QC to confirm the new capture. System: {outcome.reason}"
 

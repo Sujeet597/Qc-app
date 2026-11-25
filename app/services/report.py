@@ -193,33 +193,45 @@ def _section(pdf: FPDF, title: str) -> None:
     pdf.set_font("Helvetica", size=8)
 
 
-def _images(pdf: FPDF, items: list[tuple[str, str]], width: float = 60) -> None:
+def _images(pdf: FPDF, items: list[tuple[str, str]], width: float = 60, max_height: float = 70) -> None:
     """Captioned images, three per row."""
     gap, per_row = 5, 3
     x0 = pdf.l_margin
     for i in range(0, len(items), per_row):
         row = [(cap, _jpeg(path)) for cap, path in items[i:i + per_row]]
-        heights = []
-        for _, img in row:
+        dims: list[tuple[float, float]] = []
+        cap_heights: list[float] = []
+        for cap, img in row:
+            lines = pdf.multi_cell(width, 3.5, _latin1(cap), align="L", dry_run=True, output="LINES")
+            cap_heights.append(max(1, len(lines)) * 3.5)
             if img:
                 with Image.open(img) as im:
-                    heights.append(width * im.height / max(im.width, 1))
+                    w = width
+                    h = w * im.height / max(im.width, 1)
+                    if h > max_height:
+                        w = max_height * im.width / max(im.height, 1)
+                        h = max_height
+                    dims.append((w, h))
                 img.seek(0)
-        h = max(heights or [10]) + 22
-        if pdf.get_y() + h > pdf.page_break_trigger:
+            else:
+                dims.append((width, 5.0))
+        cap_h = max(cap_heights or [3.5])
+        img_h = max((h for _, h in dims), default=5.0)
+        total_h = cap_h + 2 + img_h + 4
+        if pdf.get_y() + total_h > pdf.page_break_trigger:
             pdf.add_page()
         y = pdf.get_y()
-        for j, (cap, img) in enumerate(row):
+        for j, ((cap, img), (w, h)) in enumerate(zip(row, dims)):
             x = x0 + j * (width + gap)
             pdf.set_xy(x, y)
             pdf.multi_cell(width, 3.5, _latin1(cap), align="L", new_x="LEFT", new_y="NEXT", max_line_height=3.5)
-            top = pdf.get_y()
+            img_y = y + cap_h + 1
             if img:
-                pdf.image(img, x=x, y=top + 1, w=width)
+                pdf.image(img, x=x, y=img_y, w=w, h=h)
             else:
-                pdf.set_xy(x, top + 1)
+                pdf.set_xy(x, img_y)
                 pdf.cell(width, 5, "image unavailable")
-        pdf.set_xy(x0, y + h)
+        pdf.set_xy(x0, y + total_h)
 
 
 def build_pdf(insp: Inspection, history: list[Inspection], extras: ReportExtras | None = None) -> bytes:

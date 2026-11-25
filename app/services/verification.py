@@ -224,9 +224,10 @@ def _barcode_taffeta(insp: Inspection, check: CheckDef, frame: bytes, inp: Check
     expected = f"barcode {po.barcode_number}, taffeta {po.taffeta_number}, article {po.article_number}"
     observed = ", ".join(codes)
     extracted = {"codes": codes, **q}
-    known = {_norm(po.barcode_number), _norm(po.taffeta_number)}
-    found_bar = po.barcode_number in codes
-    found_taf = po.taffeta_number in codes
+    known = {_norm(po.barcode_number), _norm(po.taffeta_number)} - {""}
+    norm_codes = {_norm(c) for c in codes}
+    found_bar = bool(_norm(po.barcode_number)) and _norm(po.barcode_number) in norm_codes
+    found_taf = bool(_norm(po.taffeta_number)) and _norm(po.taffeta_number) in norm_codes
     others = [c for c in codes if _norm(c) not in known]
 
     if not codes:
@@ -243,7 +244,7 @@ def _barcode_taffeta(insp: Inspection, check: CheckDef, frame: bytes, inp: Check
                      "(article number, style number, taffeta number, color, size). Put them all in observed_text.", frame))
     extracted["ai"] = r.__dict__
     text = r.observed_text if r.verdict != "unsure" else ""
-    taffeta_by_ai = not found_taf and _contains(po.taffeta_number, text)
+    taffeta_by_ai = not found_taf and r.verdict != "fail" and _contains(po.taffeta_number, text)
     found_taf = found_taf or taffeta_by_ai
     article_seen = _contains(po.article_number, text) or _contains(po.style_number, text)
 
@@ -251,6 +252,10 @@ def _barcode_taffeta(insp: Inspection, check: CheckDef, frame: bytes, inp: Check
         return Outcome(CheckStatus.MANUAL_REVIEW, None, expected, observed,
                        f"Extra / duplicate code(s) on the labels: {', '.join(others)} - QC to check the labels match each other.",
                        extracted)
+    if r.verdict == "fail":  # BRD 4B: a mismatch the AI saw on the labels is flagged, never passed on the barcode alone
+        return Outcome(CheckStatus.MANUAL_REVIEW, r.confidence, expected,
+                       f"{observed}; labels read: {text}" if text else observed,
+                       f"Barcode matches PO, but the AI flagged the labels: {r.reason} - QC to verify.", extracted)
     if not found_taf:
         return Outcome(CheckStatus.MANUAL_REVIEW, None, expected, observed, "Barcode OK, taffeta number not confirmed.", extracted)
     if text and not article_seen:
@@ -380,18 +385,27 @@ def _reading(value) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def measurement_targets(check: CheckDef, insp: Inspection) -> dict[str, tuple] | None:
+def measurement_targets(check: CheckDef, insp: Inspection) -> dict[str, tuple[float, float]] | None:
     """{reading: (target, tolerance)} from the PO, or None when the PO has no usable target for this check."""
     po = insp.po
     if check.po_field == "weight":
-        targets = {"weight_g": (po.weight_target_g, po.weight_tolerance_g)}
+        raw = {"weight_g": (po.weight_target_g, po.weight_tolerance_g)}
     elif check.po_field == "gsm":
-        targets = {"gsm": (po.gsm_target, po.gsm_tolerance)}
+        raw = {"gsm": (po.gsm_target, po.gsm_tolerance)}
     else:
-        targets = {k: tuple(v) for k, v in (po.size_chart.get(insp.size) or {}).items()}
-    if not targets or any(t is None or tol is None for t, tol in targets.values()):
-        return None
-    return targets
+        chart = po.size_chart.get(insp.size) if isinstance(po.size_chart, dict) else None
+        if not isinstance(chart, dict) or not chart:
+            return None
+        raw = chart
+    targets: dict[str, tuple[float, float]] = {}
+    for k, pair in raw.items():
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            return None
+        t, tol = _reading(pair[0]), _reading(pair[1])
+        if t is None or tol is None or tol < 0:
+            return None
+        targets[k] = (t, tol)
+    return targets or None
 
 
 def required_inputs(insp: Inspection, check_no: int) -> list[str]:
@@ -402,7 +416,9 @@ def required_inputs(insp: Inspection, check_no: int) -> list[str]:
         return []
     if check_no == 15:  # inner pack: count the pieces when the PO has a packing norm
         return [INNER_PACK_FIELD] if _reading((insp.po.packing_norms or {}).get("pcs_per_inner")) is not None else []
-    return input_fields(check_no, list((insp.po.size_chart.get(insp.size) or {}).keys()))
+    chart = insp.po.size_chart.get(insp.size) if isinstance(insp.po.size_chart, dict) else None
+    keys = list(chart.keys()) if isinstance(chart, dict) else []
+    return input_fields(check_no, keys)
 
 
 def _measurement(check: CheckDef, insp: Inspection, inp: CheckInputs, q: dict) -> Outcome:
@@ -419,7 +435,7 @@ def _measurement(check: CheckDef, insp: Inspection, inp: CheckInputs, q: dict) -
     if invalid:  # NaN / infinity / text must never be compared (NaN would slip through as "in tolerance")
         return _manual(expected, f"Invalid reading for: {', '.join(invalid)} - enter a number.", quality=q)
 
-    out = [k for k, (t, tol) in targets.items() if abs(values[k] - t) > tol]
+    out = [k for k, (t, tol) in targets.items() if abs(values[k] - t) > tol + 1e-9]
     observed = ", ".join(f"{k} {values[k]:g}" for k in targets)
     extracted = {"measured": {k: values[k] for k in targets}, **q}
     if out:

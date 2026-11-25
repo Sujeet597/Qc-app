@@ -1,7 +1,8 @@
+import math
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class ORM(BaseModel):
@@ -50,9 +51,27 @@ class POCreate(BaseModel):
     weight_tolerance_g: float | None = None
     gsm_target: float | None = None
     gsm_tolerance: float | None = None
-    size_chart: dict = {}
+    size_chart: dict[str, dict[str, tuple[float, float]]] = {}
     packing_norms: dict = {}
     order_qty: int = 0
+
+    @field_validator("size_chart", mode="before")
+    @classmethod
+    def _valid_size_chart(cls, chart: object) -> object:
+        if not isinstance(chart, dict):
+            raise ValueError("size_chart must be a JSON object")
+        for size, points in chart.items():
+            if not isinstance(size, str) or not isinstance(points, dict):
+                raise ValueError("size_chart must map size to {point: [target, tolerance]}")
+            for point, pair in points.items():
+                if not isinstance(point, str) or not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                    raise ValueError(f"size_chart[{size!r}][{point!r}] must be [target, tolerance]")
+                t, tol = pair
+                if isinstance(t, bool) or isinstance(tol, bool) or not isinstance(t, (int, float)) or not isinstance(tol, (int, float)):
+                    raise ValueError(f"size_chart[{size!r}][{point!r}] values must be numbers")
+                if not (math.isfinite(t) and math.isfinite(tol)) or tol < 0:
+                    raise ValueError(f"size_chart[{size!r}][{point!r}] must be finite numbers with tolerance >= 0")
+        return chart
 
 
 class ReferenceOut(ORM):

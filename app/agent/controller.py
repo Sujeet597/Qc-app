@@ -164,16 +164,16 @@ class InspectionController:
                     if not order:
                         break
                     no = order[0]
-                attempted.add(no)
                 self._skip = False
-                await self._do_check(no)
+                if await self._do_check(no):
+                    attempted.add(no)
         except EvidenceError as e:
             await self.messenger.send({"type": "error", "message": str(e)})
             return
         pending, _, _ = await asyncio.to_thread(self._load)
         await self.messenger.send({"type": "done", "pending_checks": pending})
 
-    async def _do_check(self, no: int) -> None:
+    async def _do_check(self, no: int) -> bool:
         d = BY_NO[no]
         fields = await asyncio.to_thread(self._fields, no)
 
@@ -188,7 +188,7 @@ class InspectionController:
                 if self._interrupted or no not in self.readings:
                     await self.messenger.send({"type": "skipped", "check_no": no,
                                                "reason": "No reading entered" if not self._interrupted else "Interrupted"})
-                    return
+                    return not (self._goto is not None or self._stop)
 
             self.sampler.decode_barcodes = d.method == Method.BARCODE_MATCH
             started = time.monotonic()
@@ -199,7 +199,7 @@ class InspectionController:
             if self._interrupted:
                 self.sampler.decode_barcodes = False
                 await self.messenger.send({"type": "skipped", "check_no": no, "reason": "Interrupted"})
-                return
+                return not (self._goto is not None or self._stop)
 
             best = self.sampler.best_since(window_start)
             if best is None:  # camera not sending yet
@@ -209,11 +209,11 @@ class InspectionController:
             if best is None:
                 await self.messenger.send({"type": "no_video", "check_no": no,
                                            "message": "No camera video received - check the vendor camera."})
-                return
+                return True
 
             reading = self.readings.get(no, {})
             inputs = CheckInputs(
-                codes=self.sampler.codes_since(started) + self.client_codes.get(no, []),
+                codes=self.sampler.codes_since(started) + self.client_codes.pop(no, []),
                 measured=reading.get("measured") or {},
                 supplier_code=reading.get("supplier_code"),
                 batch_no=reading.get("batch_no"),
@@ -229,4 +229,5 @@ class InspectionController:
             await self.messenger.send({"type": "result", "check_no": no, "title": d.title, **{
                 k: result[k] for k in ("status", "reason", "observed", "expected", "confidence")},
                 "progress": result["summary"]["progress"]})
-            return
+            return True
+        return True

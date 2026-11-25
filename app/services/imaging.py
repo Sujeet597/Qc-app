@@ -8,6 +8,7 @@ from PIL import Image
 MIN_SHARPNESS = 60.0         # Laplacian variance below this = blurry
 MIN_BRIGHTNESS = 40.0
 MAX_BRIGHTNESS = 230.0
+MIN_IMAGE_SIDE = 100
 
 
 def load_rgb(data: bytes, max_side: int = 1024) -> np.ndarray:
@@ -27,8 +28,12 @@ class Quality:
 def sharpness_brightness(rgb: np.ndarray) -> tuple[float, float]:
     """Laplacian variance (focus) and mean brightness of an RGB array."""
     gray = rgb.astype(np.float64) @ np.array([0.299, 0.587, 0.114])
+    if gray.shape[0] < 3 or gray.shape[1] < 3:
+        bright = float(gray.mean()) if gray.size else 0.0
+        return 0.0, bright if np.isfinite(bright) else 0.0
     lap = (-4 * gray[1:-1, 1:-1] + gray[:-2, 1:-1] + gray[2:, 1:-1] + gray[1:-1, :-2] + gray[1:-1, 2:])
-    return float(lap.var()), float(gray.mean())
+    sharp, bright = float(lap.var()), float(gray.mean())
+    return (sharp if np.isfinite(sharp) else 0.0), (bright if np.isfinite(bright) else 0.0)
 
 
 def downscale(rgb: np.ndarray, max_side: int) -> np.ndarray:
@@ -47,13 +52,20 @@ def encode_jpeg(rgb: np.ndarray, quality: int = 92) -> bytes:
 
 
 def assess_quality(data: bytes) -> Quality:
-    sharpness, brightness = sharpness_brightness(load_rgb(data, 512))
+    # Size rule on the original photo: after shrinking to 512 px a sharp wide label photo (e.g. 1920x300)
+    # would look "too small".
+    with Image.open(io.BytesIO(data)) as img:
+        w, h = img.size
+    rgb = load_rgb(data, 512)
+    sharpness, brightness = sharpness_brightness(rgb)
     issues = []
-    if sharpness < MIN_SHARPNESS:
+    if min(h, w) < MIN_IMAGE_SIDE:
+        issues.append(f"image too small ({w}x{h}) - move closer or check the camera.")
+    if not np.isfinite(sharpness) or sharpness < MIN_SHARPNESS:
         issues.append("Image is blurry - hold the camera steady and refocus.")
-    if brightness < MIN_BRIGHTNESS:
+    if not np.isfinite(brightness) or brightness < MIN_BRIGHTNESS:
         issues.append("Image is too dark - switch on the inspection lamp.")
-    if brightness > MAX_BRIGHTNESS:
+    elif brightness > MAX_BRIGHTNESS:
         issues.append("Image is overexposed - reduce glare / move away from the light.")
     return Quality(ok=not issues, sharpness=sharpness, brightness=brightness, issues=issues)
 
@@ -86,11 +98,16 @@ def center_lab(data: bytes) -> np.ndarray:
     """Mean Lab color of the central 50% of the frame (where the garment should be)."""
     rgb = load_rgb(data)
     h, w, _ = rgb.shape
-    crop = rgb[h // 4: 3 * h // 4, w // 4: 3 * w // 4].reshape(-1, 3)
+    crop = (rgb if h < 4 or w < 4 else rgb[h // 4: 3 * h // 4, w // 4: 3 * w // 4]).reshape(-1, 3)
+    if crop.size == 0:
+        raise ValueError("Image has no pixels")
     return _srgb_to_lab(crop.mean(axis=0))
 
 
 def delta_e(frame: bytes, reference: bytes) -> float:
     """CIE76 Delta-E. < 2 hard to see, 2-3.5 visible on close look, > 5 clearly different.
     Only meaningful when both photos are taken under the same controlled light (use a reference card)."""
-    return float(np.linalg.norm(center_lab(frame) - center_lab(reference)))
+    de = float(np.linalg.norm(center_lab(frame) - center_lab(reference)))
+    if not np.isfinite(de):
+        raise ValueError("Non-finite Delta-E")
+    return de
