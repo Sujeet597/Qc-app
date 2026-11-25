@@ -1,0 +1,31 @@
+[project]
+name = "qc-app"
+version = "0.1.0"
+description = "Garment QC video inspection - FastAPI backend"
+requires-python = ">=3.15"
+# Keep in sync with requirements.txt (pip users)
+dependencies = [
+    "fastapi[standard]>=0.165.0",   # includes uvicorn[standard], python-multipart, httpx
+    "sqlalchemy>=2.0",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "PyJWT>=2.8",
+    "pillow>=10.4",
+    "numpy>=2.0",
+    "openpyxl>=3.1",
+    "anthropic>=0.70",
+    # Live video agent (joins the LiveKit call and reads the camera)
+    "livekit>=1.0",
+    # Barcode decoding from video frames
+    "zxing-cpp>=2.2",
+]
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.2"]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

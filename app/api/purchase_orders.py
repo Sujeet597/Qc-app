@@ -44,7 +44,7 @@ def list_references(po_id: int, db: Session = Depends(get_db), user: User = Depe
 
 
 @router.post("/{po_id}/references", response_model=ReferenceOut, status_code=201)
-async def upload_reference(
+def upload_reference(
     po_id: int,
     kind: str = Form(..., description="pps | sealer | main_label | size_label | packing"),
     color_name: str | None = Form(None),
@@ -54,9 +54,10 @@ async def upload_reference(
     db: Session = Depends(get_db),
     user: User = Depends(require(Role.QC, Role.ADMIN)),
 ):
+    # plain `def`: blocking file and DB work runs in FastAPI's thread pool, not on the event loop
     po = get_po_for(db, po_id, user)
     ext = Path(file.filename or "").suffix.lower() or ".jpg"
-    path = storage.save_file(await file.read(), f"references/{po.po_number}", ext)
+    path = storage.save_file(file.file.read(), f"references/{po.po_number}", ext)
     ref = ReferenceAsset(po_id=po.id, kind=kind, color_name=color_name, size=size, note=note, file_path=path)
     db.add(ref)
     db.commit()

@@ -12,7 +12,7 @@ import time
 import numpy as np
 from livekit import rtc
 
-from app.agent.controller import AgentTiming, InspectionController
+from app.agent.controller import AgentTiming, InspectionController, sender_allowed
 from app.agent.frames import FrameSampler
 from app.core.config import settings
 from app.core.database import SessionLocal
@@ -73,7 +73,9 @@ async def run_agent(inspection_id: int, timing: AgentTiming | None = None) -> No
 
     @room.on("track_subscribed")
     def on_track(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
-        if track.kind == rtc.TrackKind.KIND_VIDEO and participant.identity.startswith("vendor-"):
+        # camera only: a screen share could show a photo or video of a good garment instead of the real item
+        if (track.kind == rtc.TrackKind.KIND_VIDEO and participant.identity.startswith("vendor-")
+                and publication.source == rtc.TrackSource.SOURCE_CAMERA):
             log.info("watching camera of %s", participant.identity)
             if publication.simulcasted:   # full-resolution layer: barcodes and labels need the detail
                 publication.set_video_quality(rtc.VideoQuality.VIDEO_QUALITY_HIGH)
@@ -89,7 +91,11 @@ async def run_agent(inspection_id: int, timing: AgentTiming | None = None) -> No
             msg = json.loads(packet.data)
         except ValueError:
             return
-        log.info("<- %s", msg)
+        sender = packet.participant.identity if packet.participant else None
+        if not isinstance(msg, dict) or not sender_allowed(msg.get("type"), sender):
+            log.warning("ignored %r from %s", msg, sender or "unknown sender")
+            return
+        log.info("<- %s from %s", msg, sender)
         controller.handle_message(msg)
 
     @room.on("disconnected")

@@ -1,4 +1,5 @@
 """Runs one checklist point against one captured frame. BRD section 3 + section 4 special checks."""
+import math
 from dataclasses import dataclass, field
 
 from sqlalchemy import select
@@ -153,6 +154,17 @@ def run_check(db: Session, insp: Inspection, check: CheckDef, frame: bytes, inp:
     raise ValueError(f"Unhandled method {check.method}")
 
 
+def _reading(value) -> float | None:
+    """A finite number, or None for NaN / infinity / booleans / text."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 def _measurement(check: CheckDef, insp: Inspection, inp: CheckInputs, q: dict) -> Outcome:
     po = insp.po
     if check.po_field == "weight":
@@ -169,9 +181,14 @@ def _measurement(check: CheckDef, insp: Inspection, inp: CheckInputs, q: dict) -
     if missing:
         return _manual(expected, f"Enter readings for: {', '.join(missing)}.", quality=q)
 
-    out = [k for k, (t, tol) in targets.items() if abs(float(inp.measured[k]) - t) > tol]
-    observed = ", ".join(f"{k} {inp.measured[k]}" for k in targets)
-    extracted = {"measured": inp.measured, **q}
+    values = {k: _reading(inp.measured[k]) for k in targets}
+    invalid = [k for k, v in values.items() if v is None]
+    if invalid:  # NaN / infinity / text must never be compared (NaN would slip through as "in tolerance")
+        return _manual(expected, f"Invalid reading for: {', '.join(invalid)} - enter a number.", quality=q)
+
+    out = [k for k, (t, tol) in targets.items() if abs(values[k] - t) > tol]
+    observed = ", ".join(f"{k} {values[k]:g}" for k in targets)
+    extracted = {"measured": {k: values[k] for k in targets}, **q}
     if out:
         return Outcome(CheckStatus.FAIL, 1.0, expected, observed, f"Out of tolerance: {', '.join(out)}.", extracted)
     return Outcome(CheckStatus.PASS, 1.0, expected, observed, "All readings within tolerance.", extracted)

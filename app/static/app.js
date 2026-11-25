@@ -7,7 +7,7 @@ const $ = (s) => document.querySelector(s);
 const S = {
   authEnabled: true, token: null, role: null, user: null,
   insp: null, mode: null, room: null, stream: null, current: null,
-  facing: "environment", readings: {}, poll: null,
+  facing: "environment", readings: {}, drafts: {}, poll: null,
 };
 const STATUS_LABEL = { pending: "Pending", pass: "Pass", fail: "Fail", manual_review: "Review" };
 const FIELD_LABEL = { weight_g: "Weight (g)", gsm: "GSM", supplier_code: "Supplier code" };
@@ -147,7 +147,7 @@ async function openInspection(id) {
   show("view-insp");
   $("#log").replaceChildren();
   $("#checklist").replaceChildren();   // don't carry expanded rows over from another inspection / role
-  S.readings = {}; S.current = null;
+  S.readings = {}; S.drafts = {}; S.current = null;
   await refresh(id);
   const live = S.insp.status === "in_progress";
   $("#vendor-controls").hidden = !live || !(isVendor() || S.role === "qc");
@@ -184,8 +184,16 @@ function renderInspection() {
 
   const ol = $("#checklist");
   const open = new Set([...ol.querySelectorAll(".check.open")].map((x) => +x.dataset.no));
+  // the 5 s poll rebuilds the list: remember which QC comment box had focus so typing isn't interrupted
+  const focused = document.activeElement?.closest?.(".review-row") ? document.activeElement : null;
+  const focusNo = focused ? +focused.closest(".check").dataset.no : null;
+  const caret = focused ? [focused.selectionStart, focused.selectionEnd] : null;
   ol.replaceChildren();
   for (const c of i.checks) ol.append(renderCheck(c, open.has(c.check_no)));
+  if (focusNo !== null) {
+    const input = ol.querySelector(`.check[data-no="${focusNo}"] .review-row input`);
+    if (input) { input.focus(); input.setSelectionRange(...caret); }
+  }
 
   const allDone = i.checks.every((c) => c.status !== "pending");
   $("#btn-submit").hidden = !(isVendor() && i.status === "in_progress");
@@ -213,13 +221,15 @@ function renderCheck(c, isOpen) {
     c.reviewer_comment ? el("div", {}, el("b", {}, "QC comment: "), c.reviewer_comment) : null,
     c.corrective_action ? el("div", {}, el("b", {}, "Corrective action: "), c.corrective_action) : null);
   if (isReviewer() && ["in_progress", "submitted"].includes(S.insp.status) && c.status !== "pending") {
-    const comment = el("input", { placeholder: "QC comment / corrective action" });
+    const comment = el("input", { placeholder: "QC comment / corrective action", value: S.drafts[c.check_no] || "" });
+    comment.addEventListener("input", () => { S.drafts[c.check_no] = comment.value; });  // survives the 5 s refresh
     const btn = (status, cls, label) => el("button", { class: cls, onclick: async (ev) => {
       ev.stopPropagation();
       try {
         await api(`/inspections/${S.insp.id}/checks/${c.check_no}/review`, { method: "POST",
           json: { status, comment: comment.value, corrective_action: status === "fail" ? comment.value : "" } });
         log(`QC marked check ${c.check_no} ${STATUS_LABEL[status]}`);
+        delete S.drafts[c.check_no];
         await refresh();
       } catch (e) { toast(e.message); }
     } }, label);
@@ -323,7 +333,13 @@ async function startLive(tok) {
   S.room = room;
   room.on(LK.RoomEvent.DataReceived, (payload, participant, kind, topic) => {
     if (topic !== "qc") return;
-    try { onAgentMessage(JSON.parse(new TextDecoder().decode(payload)), participant); } catch {}
+    try {
+      const m = JSON.parse(new TextDecoder().decode(payload));
+      // only the server agent may announce instructions / results; only the vendor asks for help
+      const from = participant?.identity || "";
+      if (m.type === "help" ? !from.startsWith("vendor-") : !from.startsWith("qc-agent-")) return;
+      onAgentMessage(m, participant);
+    } catch {}
   });
   room.on(LK.RoomEvent.TrackSubscribed, (track, pub, participant) => {
     if (track.kind === "video" && participant.identity.startsWith("vendor-") && !isVendor()) {

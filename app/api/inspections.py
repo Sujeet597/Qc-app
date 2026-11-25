@@ -1,5 +1,6 @@
 """Video inspection flow - BRD steps 2 to 5."""
 import json
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -129,7 +130,7 @@ def agent_status(insp_id: int, db: Session = Depends(get_db), user: User = Depen
 
 
 @router.post("/{insp_id}/checks/{check_no}/evidence", response_model=CheckOut)
-async def submit_evidence(
+def submit_evidence(
     insp_id: int,
     check_no: int,
     frame: UploadFile = File(..., description="JPEG/PNG frame captured from the live video"),
@@ -140,6 +141,8 @@ async def submit_evidence(
     user: User = Depends(require(Role.VENDOR, Role.QC)),
 ):
     """Capture evidence for one checklist point and run AI / rule verification on it (BRD step 3-4)."""
+    # Plain `def` on purpose: image processing and the AI call are blocking, so FastAPI runs this in its
+    # thread pool. As `async def` it would freeze the event loop (every other request) during each check.
     insp = get_inspection_for(db, insp_id, user)
     try:
         readings = json.loads(measured) if measured else {}
@@ -150,7 +153,7 @@ async def submit_evidence(
     inputs = CheckInputs(codes=[c.strip() for c in codes.split(",") if c.strip()], measured=readings,
                          supplier_code=supplier_code.strip() or None)
     try:
-        chk = record_evidence(db, insp, check_no, await frame.read(), inputs, source="upload")
+        chk = record_evidence(db, insp, check_no, frame.file.read(), inputs, source="upload")
     except EvidenceError as e:
         raise HTTPException(409 if "progress" in str(e) else 422, str(e))
     return _check_out(chk, insp)
@@ -227,6 +230,11 @@ def get_evidence_image(insp_id: int, evidence_id: int, db: Session = Depends(get
     return Response(data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
 
 
+def _safe_name(text: str) -> str:
+    """PO number made safe for a download file name / HTTP header (no quotes, slashes or line breaks)."""
+    return re.sub(r"[^A-Za-z0-9._-]", "_", text)[:64]
+
+
 @router.get("/{insp_id}/report.xlsx")
 def download_report(insp_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
     insp = get_inspection_for(db, insp_id, user)
@@ -234,4 +242,4 @@ def download_report(insp_id: int, db: Session = Depends(get_db), user: User = De
                                                   Inspection.size == insp.size).order_by(Inspection.id)).all()
     content = report.build_excel(insp, list(history))
     return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    headers={"Content-Disposition": f'attachment; filename="QC_{insp.po.po_number}_{insp.id}.xlsx"'})
+                    headers={"Content-Disposition": f'attachment; filename="QC_{_safe_name(insp.po.po_number)}_{insp.id}.xlsx"'})

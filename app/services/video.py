@@ -29,4 +29,6 @@ def room_token(room: str, identity: str, name: str, can_publish: bool, ttl_secon
             "hidden": hidden,   # the QC agent does not appear as a participant tile
         },
     }
+    if can_publish:  # camera + mic only: no screen share, so nobody can feed recorded images into the call
+        claims["video"]["canPublishSources"] = ["camera", "microphone"]
     return jwt.encode(claims, settings.livekit_api_secret, algorithm="HS256")

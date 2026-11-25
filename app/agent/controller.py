@@ -35,6 +35,25 @@ log = logging.getLogger("qc.agent")
 INPUT_METHODS = {Method.MEASUREMENT, Method.VENDOR_MASTER}
 RETRY_REASONS = ("Reshow", "Unable to read")
 
+# Who may send which data-channel message. Call identities are "<role>-<user id>" (see /video-token).
+_STAFF = {"qc", "approver", "admin"}
+ALLOWED_SENDERS: dict[str, set[str]] = {
+    "readings": {"vendor"} | _STAFF,   # vendor types the scale / tape / GSM / supplier value shown on camera
+    "goto": {"vendor"} | _STAFF,
+    "skip": {"vendor"} | _STAFF,
+    "capture": {"vendor"} | _STAFF,
+    "stop": {"vendor"} | _STAFF,
+    "codes": _STAFF,                   # barcode values decide critical check 6 - never accepted from the vendor
+}
+
+
+def sender_allowed(kind: object, identity: str | None) -> bool:
+    """True if a call participant with this identity may send this message type to the agent."""
+    if not isinstance(kind, str) or not identity or identity.startswith("qc-agent-"):
+        return False
+    role, _, user_id = identity.partition("-")
+    return user_id.isdigit() and role in ALLOWED_SENDERS.get(kind, set())
+
 
 class Messenger(Protocol):
     async def send(self, msg: dict) -> None: ...

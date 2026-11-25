@@ -13,6 +13,15 @@ from app.services.decision import summarize
 _FILL = {"pass": "C6EFCE", "fail": "FFC7CE", "manual_review": "FFEB9C", "pending": "EDEDED"}
 
 
+def _put(ws, row: int, col: int, value):
+    """Write a cell. Text is always stored as text: openpyxl would otherwise turn vendor / QC text that
+    starts with '=' (e.g. =HYPERLINK(...)) into a live formula in the QC report."""
+    cell = ws.cell(row, col, value)
+    if isinstance(value, str):
+        cell.data_type = "s"
+    return cell
+
+
 def build_excel(insp: Inspection, history: list[Inspection]) -> bytes:
     po = insp.po
     wb = Workbook()
@@ -28,8 +37,8 @@ def build_excel(insp: Inspection, history: list[Inspection]) -> bytes:
         ("Decided", insp.decided_at.strftime("%Y-%m-%d %H:%M") if insp.decided_at else ""),
     ]
     for r, (k, v) in enumerate(header, 1):
-        ws.cell(r, 1, k).font = Font(bold=True)
-        ws.cell(r, 2, v)
+        _put(ws, r, 1, k).font = Font(bold=True)
+        _put(ws, r, 2, v)
 
     start = len(header) + 2
     cols = ["No", "Checklist point", "Critical", "Expected", "Observed", "Result", "AI result",
@@ -47,7 +56,7 @@ def build_excel(insp: Inspection, history: list[Inspection]) -> bytes:
                chk.status, chk.ai_status or "", chk.confidence, chk.reason, chk.reviewer_comment,
                chk.corrective_action, f"{len(chk.evidence)} image(s)"]
         for c, v in enumerate(row, 1):
-            ws.cell(i, c, v).alignment = Alignment(wrap_text=True, vertical="top")
+            _put(ws, i, c, v).alignment = Alignment(wrap_text=True, vertical="top")
         ws.cell(i, 6).fill = PatternFill("solid", fgColor=_FILL.get(chk.status, "FFFFFF"))
 
     # Evidence sheet with thumbnails
@@ -57,7 +66,7 @@ def build_excel(insp: Inspection, history: list[Inspection]) -> bytes:
     for chk in insp.checks:
         for e in chk.evidence:
             ev.cell(row, 1, chk.check_no)
-            ev.cell(row, 2, f"{BY_NO[chk.check_no].title} - {e.captured_at:%Y-%m-%d %H:%M:%S}")
+            _put(ev, row, 2, f"{BY_NO[chk.check_no].title} - {e.captured_at:%Y-%m-%d %H:%M:%S}")
             try:
                 img = XLImage(io.BytesIO(storage.read_file(e.file_path)))
                 img.width, img.height = 240, int(240 * img.height / max(img.width, 1))
@@ -69,9 +78,10 @@ def build_excel(insp: Inspection, history: list[Inspection]) -> bytes:
 
     hist = wb.create_sheet("Reinspection history")
     hist.append(["Inspection ID", "Created", "Status", "Decided", "Note"])
-    for h in history:
-        hist.append([h.id, f"{h.created_at:%Y-%m-%d %H:%M}", h.status,
-                     f"{h.decided_at:%Y-%m-%d %H:%M}" if h.decided_at else "", h.decision_note])
+    for r, h in enumerate(history, 2):
+        for c, v in enumerate([h.id, f"{h.created_at:%Y-%m-%d %H:%M}", h.status,
+                               f"{h.decided_at:%Y-%m-%d %H:%M}" if h.decided_at else "", h.decision_note], 1):
+            _put(hist, r, c, v)
 
     buf = io.BytesIO()
     wb.save(buf)
