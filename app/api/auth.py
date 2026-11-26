@@ -6,9 +6,9 @@ from sqlalchemy.orm import Session
 from app.api.deps import current_user
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.security import create_access_token, verify_password
+from app.core.security import create_access_token, hash_password, verify_password
 from app.models import Role, User
-from app.schemas import TokenOut
+from app.schemas import PasswordChange, TokenOut
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -30,3 +30,12 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
 @router.get("/me")
 def me(user: User = Depends(current_user)):
     return {"id": user.id, "username": user.username, "role": user.role, "vendor_code": user.vendor_code}
+
+
+@router.post("/password", status_code=204)
+def change_password(body: PasswordChange, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Any signed-in user changes their own password (needs the current one)."""
+    if not verify_password(body.current_password, user.password_hash):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Current password is wrong")
+    user.password_hash = hash_password(body.new_password)
+    db.commit()

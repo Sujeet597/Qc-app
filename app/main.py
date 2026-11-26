@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import auth, dashboard, inspections, purchase_orders
+from app.api import auth, dashboard, inspections, masters, purchase_orders, users
 from app.checklist import CHECKLIST
 from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine
@@ -29,6 +29,8 @@ app.include_router(auth.router)
 app.include_router(purchase_orders.router)
 app.include_router(inspections.router)
 app.include_router(dashboard.router)
+app.include_router(users.router)
+app.include_router(masters.router)
 
 
 app.mount("/app", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="app")

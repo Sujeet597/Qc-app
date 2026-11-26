@@ -15,9 +15,9 @@ from app.api.deps import current_user, get_inspection_for, get_po_for, require
 from app.checklist import BY_NO, CHECKLIST
 from app.core.config import settings
 from app.core.database import get_db
-from app.models import CheckResult, CheckStatus, Evidence, Inspection, InspectionStatus, Role, User
+from app.models import CheckResult, CheckStatus, Evidence, Inspection, InspectionStatus, PurchaseOrder, Role, User
 from app.schemas import CheckOut, DecisionIn, InspectionCreate, InspectionOut, ReviewIn, VideoTokenOut
-from app.services import report, storage, video
+from app.services import report, storage, uploads, video
 from app.services.decision import summarize
 from app.services.evidence import EvidenceError, record_evidence
 from app.services.verification import CheckInputs, applicable_references, required_inputs
@@ -54,11 +54,15 @@ def start_inspection(body: InspectionCreate, db: Session = Depends(get_db), user
     po = get_po_for(db, body.po_id, user)
     if body.size not in po.sizes:
         raise HTTPException(422, f"Size must be one of {po.sizes}")
-    previous = db.scalar(select(Inspection).where(Inspection.po_id == po.id, Inspection.color_name == body.color_name,
+    # The PO has one color: a typo here would make the color check, references and history use the wrong color.
+    if " ".join(body.color_name.split()).casefold() != " ".join(po.color_name.split()).casefold():
+        raise HTTPException(422, f"Color must be the PO color '{po.color_name}'")
+    color = po.color_name
+    previous = db.scalar(select(Inspection).where(Inspection.po_id == po.id, Inspection.color_name == color,
                                                   Inspection.size == body.size).order_by(Inspection.id.desc()))
     if previous and previous.status in (InspectionStatus.IN_PROGRESS, InspectionStatus.SUBMITTED):
         raise HTTPException(409, f"Inspection {previous.id} is still open for this PO/color/size")
-    insp = Inspection(po_id=po.id, vendor_user_id=user.id, color_name=body.color_name, size=body.size,
+    insp = Inspection(po_id=po.id, vendor_user_id=user.id, color_name=color, size=body.size,
                       inspection_type=body.inspection_type,
                       parent_inspection_id=previous.id if previous and previous.status == InspectionStatus.REINSPECTION else None,
                       checks=[CheckResult(check_no=c.no) for c in CHECKLIST])
@@ -72,8 +76,8 @@ def start_inspection(body: InspectionCreate, db: Session = Depends(get_db), user
 @router.get("", response_model=list[InspectionOut])
 def list_inspections(status: str | None = None, db: Session = Depends(get_db), user: User = Depends(current_user)):
     q = select(Inspection).order_by(Inspection.id.desc())
-    if user.role == Role.VENDOR:
-        q = q.where(Inspection.vendor_user_id == user.id)
+    if user.role == Role.VENDOR:  # same rule as opening one (get_inspection_for): all inspections of the vendor's POs
+        q = q.join(PurchaseOrder).where(PurchaseOrder.vendor_code == user.vendor_code)
     if status:
         q = q.where(Inspection.status == status)
     return [_out(i) for i in db.scalars(q).all()]
@@ -88,6 +92,8 @@ def get_inspection(insp_id: int, db: Session = Depends(get_db), user: User = Dep
 def video_token(insp_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
     """Vendor publishes camera; QC / approver join to watch and guide."""
     insp = get_inspection_for(db, insp_id, user)
+    if insp.status != InspectionStatus.IN_PROGRESS:  # no call once submitted or decided
+        raise HTTPException(409, "Inspection is not in progress")
     if not video.livekit_enabled():
         raise HTTPException(503, "Video not configured - set LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET")
     # everyone may publish (QC talks to the vendor); the agent only watches identities starting with "vendor-"
@@ -157,7 +163,7 @@ def submit_evidence(
     inputs = CheckInputs(codes=client_codes, measured=readings,
                          supplier_code=supplier_code.strip() or None, batch_no=batch_no.strip() or None)
     try:
-        chk = record_evidence(db, insp, check_no, frame.file.read(), inputs, source="upload")
+        chk = record_evidence(db, insp, check_no, uploads.read_image(frame)[0], inputs, source="upload")
     except EvidenceError as e:
         raise HTTPException(409 if "progress" in str(e) else 422, str(e))
     return _check_out(chk, insp)

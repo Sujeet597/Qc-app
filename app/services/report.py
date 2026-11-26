@@ -88,8 +88,11 @@ def _put(ws, row: int, col: int, value):
 
 
 def _xl_image(ws, path: str, anchor: str, row: int) -> None:
+    small = _jpeg(path, 480)   # embed a small copy, not the full-resolution photo
     try:
-        img = XLImage(io.BytesIO(storage.read_file(path)))
+        if small is None:
+            raise ValueError("image unavailable")
+        img = XLImage(small)
         img.width, img.height = 240, int(240 * img.height / max(img.width, 1))
         ws.add_image(img, anchor)
         ws.row_dimensions[row].height = img.height * 0.75
@@ -169,10 +172,12 @@ def _latin1(value) -> str:
 
 def _jpeg(path: str, max_side: int = 800) -> io.BytesIO | None:
     try:
-        img = Image.open(io.BytesIO(storage.read_file(path))).convert("RGB")
+        with Image.open(io.BytesIO(storage.read_file(path))) as src:
+            src.draft("RGB", (max_side, max_side))
+            src.thumbnail((max_side, max_side))
+            img = src.convert("RGB")
     except Exception:
         return None
-    img.thumbnail((max_side, max_side))
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=80)
     buf.seek(0)

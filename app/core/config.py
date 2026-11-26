@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     jwt_secret: str = "change-me"
     jwt_expire_minutes: int = 480
     storage_dir: str = "./storage"
+    max_upload_mb: float = 10.0          # largest photo accepted (evidence frame or reference)
+    max_image_pixels: int = 40_000_000   # larger images are refused before decoding (decompression bombs)
 
     ai_provider: str = "mock"  # "mock" | "claude"
     anthropic_api_key: str = ""        # read from .env here: the Anthropic SDK itself does not read .env

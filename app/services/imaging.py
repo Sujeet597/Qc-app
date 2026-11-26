@@ -5,6 +5,11 @@ from dataclasses import dataclass, field
 import numpy as np
 from PIL import Image
 
+from app.core.config import settings
+
+# Pillow refuses images above this many pixels (DecompressionBombError) instead of filling memory.
+Image.MAX_IMAGE_PIXELS = settings.max_image_pixels
+
 MIN_SHARPNESS = 60.0         # Laplacian variance below this = blurry
 MIN_BRIGHTNESS = 40.0
 MAX_BRIGHTNESS = 230.0
@@ -12,9 +17,10 @@ MIN_IMAGE_SIDE = 100
 
 
 def load_rgb(data: bytes, max_side: int = 1024) -> np.ndarray:
-    img = Image.open(io.BytesIO(data)).convert("RGB")
-    img.thumbnail((max_side, max_side))
-    return np.asarray(img, dtype=np.float64)
+    with Image.open(io.BytesIO(data)) as img:
+        img.draft("RGB", (max_side, max_side))   # JPEG: decode at reduced size, not full resolution
+        img.thumbnail((max_side, max_side))       # shrink before converting, not after
+        return np.asarray(img.convert("RGB"), dtype=np.float64)
 
 
 @dataclass
