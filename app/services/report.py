@@ -17,6 +17,7 @@ from PIL import Image
 from app.checklist import BY_NO
 from app.models import Inspection, InspectionStatus
 from app.services import storage
+from app.services.autopilot import is_auto_approved
 from app.services.decision import summarize
 
 _FILL = {"pass": "C6EFCE", "fail": "FFC7CE", "manual_review": "FFEB9C", "pending": "EDEDED"}
@@ -60,7 +61,7 @@ def _header(insp, extras: ReportExtras) -> list[tuple[str, object]]:
         ("Vendor", po.vendor_code), ("PO", po.po_number), ("ASN", po.asn_number or ""),
         ("Article", po.article_number), ("Color", insp.color_name), ("Size", insp.size),
         ("Final approval status", insp.status), ("Summary", s["state"]), ("Progress", s["progress"]),
-        ("Decided by", _name(extras, getattr(insp, "decided_by_id", None))),
+        ("Decided by", "System (autopilot)" if is_auto_approved(insp) else _name(extras, getattr(insp, "decided_by_id", None))),
         ("Decision note", insp.decision_note),
         ("Exception recorded", "Yes" if getattr(insp, "exception_recorded", False) else ""),
         ("Decided", _when(insp.decided_at)), ("Closure date", _closed(insp)),

@@ -104,12 +104,13 @@ def test_check6_codes_match_but_ai_unavailable_passes_on_barcode(ai):
 
 # ---------- check 14 ----------
 
-def test_packing_list_must_show_size_and_quantity(ai, auto):
+def test_packing_list_must_show_size_and_asn_quantity(ai, auto):
+    shipped = _insp(shipments=[SimpleNamespace(asn_number="ASN-5001", shipped_qty=600)])
     ai("PO-1001 ASN-5001 ART-77 NAVY BLUE S 300 L 300")
-    out = _run(14)
+    out = _run(14, insp=shipped)
     assert out.status == CheckStatus.MANUAL_REVIEW and "size" in out.reason and "quantity" in out.reason
-    ai("PO-1001 ASN-5001 ART-77 NAVY BLUE M 1200")
-    assert _run(14).status == CheckStatus.PASS
+    ai("PO-1001 ASN-5001 ART-77 NAVY BLUE M 600 TOTAL 600")
+    assert _run(14, insp=shipped).status == CheckStatus.PASS   # matched against ASN quantity, not PO 1200
 
 
 # ---------- check 15 ----------

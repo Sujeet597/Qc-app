@@ -17,7 +17,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.models import CheckResult, CheckStatus, Evidence, Inspection, InspectionStatus, PurchaseOrder, Role, User
 from app.schemas import CheckOut, DecisionIn, InspectionCreate, InspectionOut, ReviewIn, VideoTokenOut
-from app.services import report, storage, uploads, video
+from app.services import autopilot, report, storage, uploads, video
 from app.services.decision import summarize
 from app.services.evidence import EvidenceError, record_evidence
 from app.services.verification import CheckInputs, applicable_references, required_inputs
@@ -222,6 +222,27 @@ def final_decision(insp_id: int, body: DecisionIn, db: Session = Depends(get_db)
     insp.decision_note = body.note
     insp.decided_by_id = user.id
     insp.decided_at = datetime.now(timezone.utc)
+    db.commit()
+    return _out(insp)
+
+
+@router.post("/autopilot/run")
+def run_autopilot(db: Session = Depends(get_db), _: User = Depends(require(Role.ADMIN))):
+    """Run one autopilot pass now (it also runs on its own every AUTOPILOT_CHECK_MINUTES when enabled)."""
+    if not settings.autopilot_enabled:
+        raise HTTPException(409, "Autopilot is off (AUTOPILOT_ENABLED=false)")
+    return {"approved": autopilot.run_once(db)}
+
+
+@router.post("/{insp_id}/reopen", response_model=InspectionOut)
+def reopen(insp_id: int, db: Session = Depends(get_db), user: User = Depends(require(Role.QC, Role.APPROVER))):
+    """QC takes back an auto-approved inspection: it returns to 'submitted' for a human decision."""
+    insp = get_inspection_for(db, insp_id, user)
+    if not autopilot.is_auto_approved(insp):
+        raise HTTPException(409, "Only an auto-approved inspection can be reopened")
+    insp.decision_note = f"Reopened by {user.full_name or user.username} (was: {insp.decision_note})"
+    insp.status = InspectionStatus.SUBMITTED
+    insp.decided_at = None
     db.commit()
     return _out(insp)
 

@@ -1,12 +1,14 @@
 """Reference master: PO data and approved PPS / sealer images (BRD step 1)."""
+from typing import Literal
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import current_user, get_po_for, require
 from app.core.database import get_db
-from app.models import Inspection, PurchaseOrder, ReferenceAsset, Role, User
-from app.schemas import POCreate, POOut, POUpdate, ReferenceOut
+from app.models import AsnShipment, Inspection, PoSupplier, PurchaseOrder, ReferenceAsset, Role, User
+from app.schemas import AsnIn, POCreate, POOut, POUpdate, PoSupplierIn, PoSupplierOut, ReferenceOut
 from app.services import storage, uploads
 
 router = APIRouter(prefix="/api/pos", tags=["purchase orders"])
@@ -60,6 +62,51 @@ def update_po(po_id: int, body: POUpdate, db: Session = Depends(get_db), user: U
                                            "gsm_target", "gsm_tolerance"):
             raise HTTPException(422, f"{field} cannot be empty")
         setattr(po, field, value)
+    db.commit()
+    return po
+
+
+@router.get("/{po_id}/suppliers", response_model=list[PoSupplierOut])
+def list_po_suppliers(po_id: int, db: Session = Depends(get_db),
+                      user: User = Depends(require(Role.QC, Role.APPROVER, Role.ADMIN))):
+    """Supplier code + batch recorded for this PO (checks 17-20 compare the tag on camera with these)."""
+    return get_po_for(db, po_id, user).suppliers
+
+
+@router.put("/{po_id}/suppliers/{category}", response_model=PoSupplierOut)
+def set_po_supplier(po_id: int, category: Literal["carton", "pocketing", "zip", "polybag"], body: PoSupplierIn,
+                    db: Session = Depends(get_db), user: User = Depends(require(Role.ADMIN))):
+    """Record the PO's supplier for one category. Temporary: replaced by a read-only query on the SRM table."""
+    po = get_po_for(db, po_id, user)
+    row = next((s for s in po.suppliers if s.category == category), None)
+    if row is None:
+        row = PoSupplier(po_id=po.id, category=category, supplier_code="")
+        po.suppliers.append(row)
+    row.supplier_code, row.batch_no = body.supplier_code.strip(), body.batch_no.strip()
+    db.commit()
+    return row
+
+
+@router.delete("/{po_id}/suppliers/{category}", status_code=204)
+def remove_po_supplier(po_id: int, category: str, db: Session = Depends(get_db), user: User = Depends(require(Role.ADMIN))):
+    po = get_po_for(db, po_id, user)
+    row = next((s for s in po.suppliers if s.category == category), None)
+    if row is None:
+        raise HTTPException(404, "No supplier recorded for this category")
+    po.suppliers.remove(row)
+    db.commit()
+
+
+@router.put("/{po_id}/asn", response_model=POOut)
+def set_asn(po_id: int, body: AsnIn, db: Session = Depends(get_db), user: User = Depends(require(Role.ADMIN))):
+    """Record the PO's ASN number and shipped quantity (check 14). Temporary until SRM ASN data is linked."""
+    po = get_po_for(db, po_id, user)
+    po.asn_number = body.asn_number.strip()
+    row = next((s for s in po.shipments if s.asn_number == po.asn_number), None)
+    if row is None:
+        po.shipments.append(AsnShipment(po_id=po.id, asn_number=po.asn_number, shipped_qty=body.shipped_qty))
+    else:
+        row.shipped_qty = body.shipped_qty
     db.commit()
     return po
 

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.checklist import BY_NO, CheckDef, Method, input_fields
 from app.core.config import settings
 from app.models import CheckStatus, Inspection, NominatedVendor, ReferenceAsset
-from app.services import barcode, imaging, storage
+from app.services import barcode, imaging, po_data, storage
 from app.services.ai_vision import AIResult, VisionTask, get_provider
 from app.services.decision import from_ai
 
@@ -174,7 +174,7 @@ def _run_check(db: Session, insp: Inspection, check: CheckDef, frame: bytes, inp
             return _packing_list(insp, check, frame, q)
 
         case Method.MEASUREMENT:
-            return _measurement(check, insp, inp, q)
+            return _measurement(check, insp, inp, q, frame)
 
         case Method.VENDOR_MASTER:
             return _nominated_vendor(db, insp, check, frame, inp, q)
@@ -271,26 +271,50 @@ def _barcode_taffeta(insp: Inspection, check: CheckDef, frame: bytes, inp: Check
 
 
 def _packing_list(insp: Inspection, check: CheckDef, frame: bytes, q: dict) -> Outcome:
-    """BRD check 14: reconcile article, color, size, quantity and PO details."""
+    """BRD check 14: reconcile article, color, size, quantity and PO details.
+    Senior's decision: the quantity is matched against the ASN (shipped) quantity, and a total above the
+    PO quantity is flagged for QC."""
     po = insp.po
+    asn_qty = po_data.asn_quantity(po)
     need = {"PO": po.po_number, "article": po.article_number, "color": insp.color_name, "size": insp.size}
     if po.asn_number:
         need["ASN"] = po.asn_number
-    if po.order_qty:
-        need["quantity"] = str(po.order_qty)
+    if asn_qty is not None:
+        need["ASN quantity"] = str(asn_qty)
     r = get_provider().analyze(VisionTask(
-        check.title, "Read this packing list. Copy the PO number, ASN number, article, color, sizes and quantities "
-                     "into observed_text.", frame))
+        check.title, "Read this packing list. Copy the PO number, ASN number, article, color, sizes, quantities and "
+                     "the total quantity (as 'TOTAL <number>') into observed_text.", frame))
     expected = ", ".join(f"{k} {v}" for k, v in need.items())
-    extracted = {"ai": r.__dict__, **q}
+    extracted = {"ai": r.__dict__, "asn_qty": asn_qty, **q}
     if r.verdict == "unsure":
         return Outcome(CheckStatus.MANUAL_REVIEW, r.confidence, expected, r.observed_text, r.reason, extracted)
+
+    flags = []
+    if asn_qty is None:
+        flags.append("ASN shipped quantity not available")
+    elif po.order_qty and asn_qty > po.order_qty:
+        flags.append(f"ASN quantity {asn_qty} is more than PO quantity {po.order_qty}")
+    total = _total_on_list(r.observed_text)
+    if total is not None and po.order_qty and total > po.order_qty:
+        flags.append(f"packing list total {total} is more than PO quantity {po.order_qty}")
     missing = [k for k, v in need.items() if not _contains(v, r.observed_text)]
     if missing:
+        flags.insert(0, f"not found on packing list: {', '.join(missing)}")
+    if flags:
         return Outcome(CheckStatus.MANUAL_REVIEW, r.confidence, expected, r.observed_text,
-                       f"Not found on packing list: {', '.join(missing)} - QC to reconcile.", extracted)
+                       _sentence("; ".join(flags)) + " - QC to reconcile.", extracted)
     return Outcome(_ai_status(r), r.confidence, expected, r.observed_text,
-                   f"PO details found on packing list. {r.reason}", extracted, ai_decided=True)
+                   f"PO details and ASN quantity found on packing list. {r.reason}", extracted, ai_decided=True)
+
+
+def _sentence(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
+def _total_on_list(text: str) -> int | None:
+    """The number after 'TOTAL' on the packing list text, if the AI found one."""
+    m = re.search(r"\btotal\b[^0-9]{0,20}(\d[\d,]*)", text or "", flags=re.I)
+    return int(m.group(1).replace(",", "")) if m else None
 
 
 def _inner_pack(insp: Inspection, inp: CheckInputs, visual: Outcome) -> Outcome:
@@ -339,6 +363,10 @@ def _nominated_vendor(db: Session, insp: Inspection, check: CheckDef, frame: byt
     task = _VENDOR_TASKS.get(check.vendor_category or "", "Read the supplier name / code / batch printed on the item "
                                                            "and check visible quality and damage.")
     r = get_provider().analyze(VisionTask(check.title, task, frame))
+    lot = po_data.expected_supplier(po, check.vendor_category)
+    if lot is not None:
+        return _supplier_from_db(check, po, lot, allowed, expected, r, q)
+    # No supplier recorded for this PO yet: fall back to the code / batch the vendor typed.
     supplier = inp.supplier_code or r.observed_text
     batch = str(inp.batch_no or "").strip()[:64]
     extracted = {"ai": r.__dict__, "supplier": supplier, "batch_no": batch, **q}
@@ -372,6 +400,37 @@ def _nominated_vendor(db: Session, insp: Inspection, check: CheckDef, frame: byt
                        f"Nominated supplier {name}, but batch number not recorded - enter the batch number.", extracted)
     return Outcome(status, r.confidence, expected, observed, f"Nominated supplier {name}, batch {batch}. Visual: {r.reason}",
                    extracted, ai_decided=True)
+
+
+def _supplier_from_db(check: CheckDef, po, lot: po_data.SupplierLot, allowed: dict, nominated_list: str,
+                      r: AIResult, q: dict) -> Outcome:
+    """Senior's decision (checks 17-20): supplier code and batch come from the database by PO; the vendor shows
+    the tag and the system compares it with the database value. Mismatch or unreadable tag -> Manual Review."""
+    needs_batch = check.vendor_category != "carton" and bool(lot.batch_no)
+    expected = f"supplier {lot.supplier_code}" + (f", batch {lot.batch_no}" if needs_batch else "")
+    extracted = {"ai": r.__dict__, "db_supplier": lot.supplier_code, "db_batch": lot.batch_no, **q}
+    if allowed and _norm(lot.supplier_code) not in allowed:   # data fact: the PO's recorded supplier is not nominated
+        return Outcome(CheckStatus.FAIL, 1.0, expected, "",
+                       f"Supplier {lot.supplier_code} recorded for this PO is not a nominated vendor ({nominated_list}).",
+                       extracted)
+    text = r.observed_text if r.verdict != "unsure" else ""
+    if not text:
+        return Outcome(CheckStatus.MANUAL_REVIEW, None, expected, "",
+                       "Unable to read the supplier tag - show it closer.", extracted)
+    code_ok = _contains(lot.supplier_code, text)
+    batch_ok = not needs_batch or _contains(lot.batch_no, text)
+    if not (code_ok and batch_ok):
+        wrong = ", ".join(x for x, ok in (("supplier code", code_ok), ("batch", batch_ok)) if not ok)
+        return Outcome(CheckStatus.MANUAL_REVIEW, r.confidence, expected, text,
+                       f"Tag does not match the database ({wrong}) - QC to verify.", extracted)
+    name = allowed.get(_norm(lot.supplier_code), lot.supplier_code)
+    match_note = f"Tag matches database: {name} ({lot.supplier_code})" + (f", batch {lot.batch_no}" if needs_batch else "")
+    status = _ai_status(r)
+    if check.vendor_category == "carton" and status != CheckStatus.FAIL:   # BRD 4D: never auto-passes
+        return Outcome(CheckStatus.MANUAL_REVIEW, r.confidence, expected, text,
+                       f"{match_note}. Carton grade, dimensions and board strength need QC confirmation or a test "
+                       f"report. Visual: {r.reason}", extracted)
+    return Outcome(status, r.confidence, expected, text, f"{match_note}. Visual: {r.reason}", extracted, ai_decided=True)
 
 
 def _reading(value) -> float | None:
@@ -416,12 +475,36 @@ def required_inputs(insp: Inspection, check_no: int) -> list[str]:
         return []
     if check_no == 15:  # inner pack: count the pieces when the PO has a packing norm
         return [INNER_PACK_FIELD] if _reading((insp.po.packing_norms or {}).get("pcs_per_inner")) is not None else []
+    if check.method == Method.VENDOR_MASTER and po_data.expected_supplier(insp.po, check.vendor_category):
+        return []   # supplier + batch come from the database; the vendor only shows the tag
+
     chart = insp.po.size_chart.get(insp.size) if isinstance(insp.po.size_chart, dict) else None
     keys = list(chart.keys()) if isinstance(chart, dict) else []
     return input_fields(check_no, keys)
 
 
-def _measurement(check: CheckDef, insp: Inspection, inp: CheckInputs, q: dict) -> Outcome:
+_DISPLAY_FIELDS = {"weight": "weight_g", "gsm": "gsm"}   # readings shown on a scale / tester display
+
+
+def _display_check(check: CheckDef, frame: bytes | None, typed: float) -> tuple[bool, str, dict]:
+    """Senior's decision (checks 8, 10): typed reading is allowed, with the display visible on camera.
+    Returns (mismatch, note, extracted). The AI only reads the display; an unreadable display never
+    changes the result, a clearly different number sends the check to QC."""
+    if frame is None or check.po_field not in _DISPLAY_FIELDS:
+        return False, "", {}
+    r = get_provider().analyze(VisionTask(
+        check.title, "Read the number shown on the weighing scale / GSM tester display exactly. "
+                     "Put only that number in observed_text; leave it empty if the display is not visible.", frame))
+    shown = _reading(re.sub(r"[^0-9.\-]", "", r.observed_text)) if r.verdict != "unsure" and r.observed_text else None
+    extra = {"display_ai": r.__dict__, "display_value": shown}
+    if shown is None:
+        return False, " Display not confirmed on camera - QC can check the photo.", extra
+    if abs(shown - typed) > max(0.5, abs(typed) * 0.01):
+        return True, f"Typed {typed:g} but the display shows {shown:g} - QC to verify.", extra
+    return False, f" Display reading {shown:g} confirmed.", extra
+
+
+def _measurement(check: CheckDef, insp: Inspection, inp: CheckInputs, q: dict, frame: bytes | None = None) -> Outcome:
     targets = measurement_targets(check, insp)
     if targets is None:
         return _manual("", "No target / tolerance on PO for this check - QC to verify.", quality=q)
@@ -438,6 +521,11 @@ def _measurement(check: CheckDef, insp: Inspection, inp: CheckInputs, q: dict) -
     out = [k for k, (t, tol) in targets.items() if abs(values[k] - t) > tol + 1e-9]
     observed = ", ".join(f"{k} {values[k]:g}" for k in targets)
     extracted = {"measured": {k: values[k] for k in targets}, **q}
+    field = _DISPLAY_FIELDS.get(check.po_field or "")
+    mismatch, note, extra = _display_check(check, frame, values[field]) if field in values else (False, "", {})
+    extracted.update(extra)
+    if mismatch:   # the typed value is not what the display shows: do not decide on it
+        return Outcome(CheckStatus.MANUAL_REVIEW, None, expected, observed, note, extracted)
     if out:
-        return Outcome(CheckStatus.FAIL, 1.0, expected, observed, f"Out of tolerance: {', '.join(out)}.", extracted)
-    return Outcome(CheckStatus.PASS, 1.0, expected, observed, "All readings within tolerance.", extracted)
+        return Outcome(CheckStatus.FAIL, 1.0, expected, observed, f"Out of tolerance: {', '.join(out)}.{note}", extracted)
+    return Outcome(CheckStatus.PASS, 1.0, expected, observed, f"All readings within tolerance.{note}", extracted)

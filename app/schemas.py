@@ -140,6 +140,22 @@ class NominatedVendorOut(ORM):
     supplier_name: str
 
 
+class PoSupplierIn(BaseModel):
+    supplier_code: str = Field(min_length=1, max_length=64)
+    batch_no: str = Field("", max_length=64)
+
+
+class PoSupplierOut(ORM):
+    category: str
+    supplier_code: str
+    batch_no: str
+
+
+class AsnIn(BaseModel):
+    asn_number: str = Field(min_length=1, max_length=64)
+    shipped_qty: int = Field(ge=0)
+
+
 RoleName = Literal["vendor", "qc", "approver", "admin"]
 
 

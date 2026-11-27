@@ -77,6 +77,28 @@ class PurchaseOrder(Base):
     order_qty: Mapped[int] = mapped_column(Integer, default=0)
 
     references: Mapped[list["ReferenceAsset"]] = relationship(back_populates="po", cascade="all, delete-orphan")
+    suppliers: Mapped[list["PoSupplier"]] = relationship(cascade="all, delete-orphan")
+    shipments: Mapped[list["AsnShipment"]] = relationship(cascade="all, delete-orphan")
+
+
+class PoSupplier(Base):
+    """Supplier code + batch recorded for a PO per category (checks 17-20). Senior's decision: these come
+    from the database, not from vendor typing. Local table until the SRM / Supabase table is confirmed."""
+    __tablename__ = "po_suppliers"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    po_id: Mapped[int] = mapped_column(ForeignKey("purchase_orders.id"), index=True)
+    category: Mapped[str] = mapped_column(String(32))          # carton | pocketing | zip | polybag
+    supplier_code: Mapped[str] = mapped_column(String(64))
+    batch_no: Mapped[str] = mapped_column(String(64), default="")
+
+
+class AsnShipment(Base):
+    """Shipped quantity per ASN (check 14 compares the packing list with it). Local table until SRM data is linked."""
+    __tablename__ = "asn_shipments"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    po_id: Mapped[int] = mapped_column(ForeignKey("purchase_orders.id"), index=True)
+    asn_number: Mapped[str] = mapped_column(String(64))
+    shipped_qty: Mapped[int] = mapped_column(Integer)
 
 
 class ReferenceAsset(Base):

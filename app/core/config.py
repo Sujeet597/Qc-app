@@ -27,6 +27,13 @@ class Settings(BaseSettings):
 
     color_delta_e_max: float = 3.0
 
+    # Autopilot (senior-approved safe version): when QC is not available, a fully clean submitted inspection
+    # is approved by the system after AUTOPILOT_WAIT_HOURS without QC action. Fail / Manual Review / critical
+    # always wait for QC. Enable only after the pilot on real garments.
+    autopilot_enabled: bool = False
+    autopilot_wait_hours: float = 24.0
+    autopilot_check_minutes: float = 10.0
+
     livekit_url: str = ""
     livekit_api_key: str = ""
     livekit_api_secret: str = ""

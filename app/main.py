@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -11,6 +13,22 @@ from app.checklist import CHECKLIST
 from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine
 from app.seed import seed
+from app.services import autopilot
+
+
+def _autopilot_pass() -> None:
+    with SessionLocal() as db:
+        autopilot.run_once(db)
+
+
+async def _autopilot_loop() -> None:
+    """Checks every AUTOPILOT_CHECK_MINUTES for clean inspections that waited long enough (only when enabled)."""
+    while True:
+        await asyncio.sleep(settings.autopilot_check_minutes * 60)
+        try:
+            await asyncio.to_thread(_autopilot_pass)
+        except Exception:  # never let a bad pass stop the loop
+            logging.getLogger("qc.autopilot").exception("autopilot pass failed")
 
 
 @asynccontextmanager
@@ -19,7 +37,10 @@ async def lifespan(_: FastAPI):
     if settings.seed_demo_data:
         with SessionLocal() as db:
             seed(db)
+    task = asyncio.create_task(_autopilot_loop()) if settings.autopilot_enabled else None
     yield
+    if task:
+        task.cancel()
 
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)

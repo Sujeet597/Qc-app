@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import require
 from app.checklist import BY_NO
 from app.core.database import get_db
+from app.services import autopilot
 from app.models import CheckStatus, Inspection, Role, User
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
@@ -32,6 +33,7 @@ def summary(db: Session = Depends(get_db), _: User = Depends(require(Role.QC, Ro
                 fails_by_check[c.check_no] += 1
     return {
         "total_inspections": len(inspections),
+        "auto_approved": sum(autopilot.is_auto_approved(i) for i in inspections),   # passed by autopilot, not a person
         "by_status": by_status,
         "by_vendor": by_vendor,
         "by_po": by_po,
